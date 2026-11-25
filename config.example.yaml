@@ -1,0 +1,15 @@
+# Sample DailyDash TUI Configuration
+# Copy or generate via: dailydash --init-config
+profile:
+  name: Alex
+  primary_host: MacBook-Pro-M3.local
+  location: San Francisco, CA
+  latitude: 37.7749
+  longitude: -122.4194
+  temperature_unit: fahrenheit
+
+refresh_intervals:
+  system_metrics_sec: 2.0
+  weather_sec: 900.0
+  calendar_sec: 300.0
+  smart_home_sec: 15.0
