@@ -175,6 +175,17 @@ class DailyDashApp(App[None]):
         self.query_one(CommunityExtrasPane).tick_second()
         if not self.offline:
             self.run_worker(self._refresh_weather(), exclusive=True)
+            self.run_worker(self._worker_refresh_smart_home(), exclusive=False)
+
+    async def _worker_refresh_smart_home(self) -> None:
+        from daily_dash.discovery import refresh_smart_devices_telemetry
+
+        await asyncio.to_thread(
+            refresh_smart_devices_telemetry,
+            self.config.get("google_home_devices", []),
+        )
+        for pane in self.query(SmartHomePane):
+            pane.refresh_view()
 
     def action_sync_google(self) -> None:
         self.notify("Syncing Google Calendar, Tasks & Apps Script Automations...", title="Google Workspace")

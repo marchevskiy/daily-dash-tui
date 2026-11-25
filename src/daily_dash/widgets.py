@@ -223,12 +223,15 @@ class SystemMonitorPane(ResponsivePane):
 
 
 class SmartHomePane(ResponsivePane):
-    """Pane 2: Google Home & Matter Connected Devices with interactive toggle."""
+    """Pane 2: Google Home & Matter Connected Devices with live speaker volume & thermostat temperatures."""
 
     BINDINGS = [
         Binding("j,down", "cursor_down", "Next Device", show=False),
         Binding("k,up", "cursor_up", "Prev Device", show=False),
         Binding("space,enter", "toggle_device", "Toggle Device", show=True),
+        Binding("+,=,right,]", "level_up", "+Vol/+Temp", show=True),
+        Binding("-,_,left,[", "level_down", "-Vol/-Temp", show=True),
+        Binding("m", "mute_speaker", "Mute Speaker", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -249,7 +252,7 @@ class SmartHomePane(ResponsivePane):
 
     def __init__(self, config: dict[str, Any], **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self.border_title = " 🏠 Google Home & SF Smart Devices [Space: Toggle | s: Scan LAN] "
+        self.border_title = " 🏠 Google Home, Speakers & Thermostats [Space: Toggle | +/-: Vol/Temp | s: Scan] "
         self.devices: list[dict[str, Any]] = list(config.get("google_home_devices", []))
 
     def reload_devices(self, devices: list[dict[str, Any]]) -> None:
@@ -274,28 +277,109 @@ class SmartHomePane(ResponsivePane):
     def action_toggle_device(self) -> None:
         if not self.devices:
             return
+        from daily_dash.discovery import format_smart_device_state
+
         dev = self.devices[self.selected_idx]
         dev["active"] = not dev.get("active", True)
         dtype = dev.get("type", "device")
-        if dtype == "light":
+        if dtype in ("thermostat", "speaker"):
+            if dtype == "thermostat":
+                dev["hvac_mode"] = "Heating" if dev["active"] else "Eco Mode"
+            dev["state"] = format_smart_device_state(dev)
+        elif dtype == "light":
             dev["state"] = "On • 85% Warm White (90+ CRI)" if dev["active"] else "Off • Standby"
         elif dtype == "lock":
             dev["state"] = "Locked • Battery 94%" if dev["active"] else "Unlocked • Manual"
-        elif dtype == "speaker":
-            dev["state"] = "Playing • Nest Audio Cast" if dev["active"] else "Idle • Ready to Cast"
-        elif dtype == "thermostat":
-            dev["state"] = "Heating • 69°F → 70°F" if dev["active"] else "Eco Mode • 64°F"
         else:
             dev["state"] = "Active • All Clear" if dev["active"] else "Standby • Muted"
         self.refresh_view()
 
+    def action_level_up(self) -> None:
+        self._adjust_level(+1)
+
+    def action_level_down(self) -> None:
+        self._adjust_level(-1)
+
+    def action_mute_speaker(self) -> None:
+        if not self.devices:
+            return
+        from daily_dash.discovery import format_smart_device_state, set_cast_volume_on_lan
+
+        dev = self.devices[self.selected_idx]
+        if dev.get("type") == "speaker":
+            dev["muted"] = not dev.get("muted", False)
+            dev["state"] = format_smart_device_state(dev)
+            if dev.get("ip"):
+                set_cast_volume_on_lan(dev["ip"], int(dev.get("volume_pct", 40)), muted=dev["muted"])
+            self.refresh_view()
+
+    def _adjust_level(self, direction: int) -> None:
+        if not self.devices:
+            return
+        from daily_dash.discovery import format_smart_device_state, set_cast_volume_on_lan
+
+        dev = self.devices[self.selected_idx]
+        dtype = dev.get("type", "")
+        if dtype == "speaker":
+            curr = int(dev.get("volume_pct", 40))
+            new_vol = max(0, min(100, curr + direction * 5))
+            dev["volume_pct"] = new_vol
+            dev["muted"] = False
+            dev["state"] = format_smart_device_state(dev)
+            if dev.get("ip"):
+                set_cast_volume_on_lan(dev["ip"], new_vol, muted=False)
+            self.refresh_view()
+        elif dtype == "thermostat":
+            curr_target = float(dev.get("target_f", 70))
+            dev["target_f"] = round(max(55.0, min(85.0, curr_target + direction * 1.0)), 1)
+            dev["state"] = format_smart_device_state(dev)
+            self.refresh_view()
+
+    def _format_telemetry_badge(self, dev: dict[str, Any], is_zoomed: bool) -> Text:
+        dtype = dev.get("type", "")
+        if dtype == "thermostat":
+            amb = dev.get("temp_f", 69)
+            tgt = dev.get("target_f", 70)
+            hum = dev.get("humidity")
+            badge = Text(f"🌡️ {amb}°F → {tgt}°F", style="bold bright_yellow")
+            if hum is not None and is_zoomed:
+                badge.append(f" ({hum}% RH)", style="cyan")
+            return badge
+        if dtype == "speaker":
+            vol = int(dev.get("volume_pct", 40))
+            muted = dev.get("muted", False)
+            if muted:
+                return Text(f"🔇 Muted ({vol}%)", style="bold bright_red")
+            bars = int(round((vol / 100.0) * (10 if is_zoomed else 5)))
+            bar_str = "█" * bars + "░" * ((10 if is_zoomed else 5) - bars)
+            txt = Text(f"🔊 {vol:3d}% ", style="bold bright_cyan")
+            txt.append(bar_str, style="cyan")
+            return txt
+        if dtype == "lock":
+            return Text("🔒 94% Batt", style="green")
+        if dtype == "air":
+            return Text("🍃 48% RH", style="bright_green")
+        return Text("● Online", style="grey70")
+
     def _build_renderable(self) -> Group:
         _, h, is_zoomed = self._dims()
         active_count = sum(1 for d in self.devices if d.get("active"))
+
+        # Compute quick header averages for thermostats & speakers
+        tstats = [d for d in self.devices if d.get("type") == "thermostat"]
+        speakers = [d for d in self.devices if d.get("type") == "speaker"]
         summary = Text()
-        summary.append("SF Rowhouse Hub: ", style="bold #34d399")
-        summary.append(f"{len(self.devices)} online • {active_count} active ", style="white")
-        summary.append("• Mesh: 610 Mbps", style="grey70")
+        summary.append("SF Smart Home: ", style="bold #34d399")
+        summary.append(f"{active_count}/{len(self.devices)} active ", style="white")
+        if tstats:
+            t0 = tstats[0]
+            summary.append(
+                f"• 🌡️ {t0.get('temp_f', 69)}°F (Set {t0.get('target_f', 70)}°F) ",
+                style="bold bright_yellow",
+            )
+        if speakers:
+            s0 = speakers[0]
+            summary.append(f"• 🔊 Vol {s0.get('volume_pct', 40)}%", style="bold bright_cyan")
 
         table = Table(
             show_header=True,
@@ -306,10 +390,9 @@ class SmartHomePane(ResponsivePane):
         )
         table.add_column("", width=2)
         table.add_column("DEVICE", ratio=2)
-        table.add_column("ROOM / ZONE", style="grey70", ratio=1)
-        if is_zoomed:
-            table.add_column("TYPE", style="cyan", width=12)
-        table.add_column("STATE", ratio=2)
+        table.add_column("ROOM", style="grey70", ratio=1)
+        table.add_column("TEMP / VOLUME", width=22 if is_zoomed else 16)
+        table.add_column("STATE / DETAILS", ratio=2)
 
         icons = {
             "thermostat": "🌡️",
@@ -329,24 +412,16 @@ class SmartHomePane(ResponsivePane):
             name_style = "bold reverse" if is_sel else ("bold white" if active else "grey62")
             state_style = "bright_green" if active else "grey58"
 
-            if is_zoomed:
-                table.add_row(
-                    Text(pointer, style="bold #34d399"),
-                    Text(f"{icon} {dev.get('name', 'Device')}", style=name_style),
-                    str(dev.get("room", "")),
-                    str(dev.get("type", "smart")).upper(),
-                    Text(f"● {dev.get('state', '')}", style=state_style if active else dot_style),
-                )
-            else:
-                table.add_row(
-                    Text(pointer, style="bold #34d399"),
-                    Text(f"{icon} {dev.get('name', 'Device')}", style=name_style),
-                    str(dev.get("room", "")),
-                    Text(f"● {dev.get('state', '')}", style=state_style if active else dot_style),
-                )
+            table.add_row(
+                Text(pointer, style="bold #34d399"),
+                Text(f"{icon} {dev.get('name', 'Device')}", style=name_style),
+                str(dev.get("room", "")),
+                self._format_telemetry_badge(dev, is_zoomed),
+                Text(f"● {dev.get('state', '')}", style=state_style if active else dot_style),
+            )
 
         footer = Text(
-            "↑/↓ (or j/k) + Space: Toggle device  •  Press 's' to scan LAN for Google Cast/Matter devices",
+            "↑/↓ + Space: Toggle  •  +/- (or ←/→): Adjust Speaker Vol% / Thermostat °F  •  m: Mute  •  s: Scan LAN",
             style="italic grey50",
         )
         return Group(summary, _pane_divider(), table, _pane_divider(), footer)

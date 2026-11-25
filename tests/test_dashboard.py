@@ -98,7 +98,10 @@ def test_cli_init_config(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_tui_panes_and_dynamic_zoom() -> None:
-    cfg = load_config()
+    import copy
+    from daily_dash.config import DEFAULT_CONFIG
+
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
     app = DailyDashApp(config=cfg, offline=True)
     async with app.run_test(size=(150, 44)) as pilot:
         sys_pane = app.query_one("#pane-system", SystemMonitorPane)
@@ -113,12 +116,25 @@ async def test_tui_panes_and_dynamic_zoom() -> None:
         assert len(extras_pane.automations) == 4
         assert cal_pane is not None
 
-        # Focus pane 2 (Smart Home) and toggle a device
+        # Focus pane 2 (Smart Home), toggle thermostat, and adjust target temperature with +
         await pilot.press("2")
         assert app.focused == home_pane
         initial_state = home_pane.devices[0]["active"]
         await pilot.press("space")
         assert home_pane.devices[0]["active"] is not initial_state
+        initial_target = float(home_pane.devices[0]["target_f"])
+        await pilot.press("+")
+        assert float(home_pane.devices[0]["target_f"]) == initial_target + 1.0
+
+        # Navigate down to Kitchen Nest Hub Max speaker (index 2) and adjust volume + mute
+        await pilot.press("j")
+        await pilot.press("j")
+        assert home_pane.devices[home_pane.selected_idx]["type"] == "speaker"
+        initial_vol = int(home_pane.devices[home_pane.selected_idx]["volume_pct"])
+        await pilot.press("+")
+        assert int(home_pane.devices[home_pane.selected_idx]["volume_pct"]) == min(100, initial_vol + 5)
+        await pilot.press("m")
+        assert home_pane.devices[home_pane.selected_idx]["muted"] is True
 
         # Focus pane 4 (Tasks & Email) and toggle task completion
         await pilot.press("4")
