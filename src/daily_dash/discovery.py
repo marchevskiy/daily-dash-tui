@@ -402,8 +402,8 @@ def fetch_thermostat_telemetry(
 
 
 def format_smart_device_state(dev: dict[str, Any]) -> str:
-    """Format a rich human-readable state string including temperature/setpoint for thermostats
-    and volume/mute level for smart speakers.
+    """Format a rich human-readable state string explicitly showing current ambient temperature
+    (`Now: X°F`) and target setpoint (`Set: Y°F`) for thermostats, and volume/mute level for speakers.
     """
     dtype = dev.get("type", "device")
     active = dev.get("active", True)
@@ -411,13 +411,10 @@ def format_smart_device_state(dev: dict[str, Any]) -> str:
     if dtype == "thermostat":
         temp_f = dev.get("temp_f", 69)
         target_f = dev.get("target_f", 70)
-        sensor_f = dev.get("downstairs_temp_f")
         humidity = dev.get("humidity")
         mode = dev.get("hvac_mode") or ("Heating" if active else "Eco Mode")
         src = dev.get("source")
-        parts = [f"{mode} • {temp_f}°F → {target_f}°F"]
-        if sensor_f is not None:
-            parts.append(f"Downstairs {sensor_f}°F")
+        parts = [f"{mode}", f"Now: {temp_f}°F | Set: {target_f}°F"]
         if humidity is not None:
             parts.append(f"{humidity}% RH")
         if src:

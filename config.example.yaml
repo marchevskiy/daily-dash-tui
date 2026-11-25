@@ -71,7 +71,7 @@ google_home_devices:
   temp_f: 69
   target_f: 70
   humidity: 46
-  state: Heating • 69°F → 70°F • 46% RH
+  state: 'Heating • Now: 69°F | Set: 70°F • 46% RH'
   online: true
   active: true
 - id: nest-thermostat-downstairs
@@ -82,7 +82,7 @@ google_home_devices:
   temp_f: 68
   target_f: 68
   humidity: 48
-  state: Heating • 68°F → 68°F • 48% RH
+  state: 'Heating • Now: 68°F | Set: 68°F • 48% RH'
   online: true
   active: true
 managed_hosts:

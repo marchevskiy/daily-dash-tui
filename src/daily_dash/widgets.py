@@ -293,6 +293,19 @@ class SmartHomePane(ResponsivePane):
         else:
             dev["state"] = "Active • All Clear" if dev["active"] else "Standby • Muted"
         self.refresh_view()
+        self._persist_devices()
+
+    def _persist_devices(self) -> None:
+        try:
+            if getattr(self.app, "offline", False):
+                return
+            from daily_dash.config import load_config, save_config
+
+            cfg = load_config()
+            cfg["google_home_devices"] = list(self.devices)
+            save_config(cfg)
+        except Exception:
+            pass
 
     def action_level_up(self) -> None:
         self._adjust_level(+1)
@@ -312,6 +325,7 @@ class SmartHomePane(ResponsivePane):
             if dev.get("ip"):
                 set_cast_volume_on_lan(dev["ip"], int(dev.get("volume_pct", 40)), muted=dev["muted"])
             self.refresh_view()
+            self._persist_devices()
 
     def _adjust_level(self, direction: int) -> None:
         if not self.devices:
@@ -329,11 +343,13 @@ class SmartHomePane(ResponsivePane):
             if dev.get("ip"):
                 set_cast_volume_on_lan(dev["ip"], new_vol, muted=False)
             self.refresh_view()
+            self._persist_devices()
         elif dtype == "thermostat":
             curr_target = float(dev.get("target_f", 70))
             dev["target_f"] = round(max(55.0, min(85.0, curr_target + direction * 1.0)), 1)
             dev["state"] = format_smart_device_state(dev)
             self.refresh_view()
+            self._persist_devices()
 
     def _format_telemetry_badge(self, dev: dict[str, Any], is_zoomed: bool) -> Text:
         dtype = dev.get("type", "")
@@ -341,7 +357,10 @@ class SmartHomePane(ResponsivePane):
             amb = dev.get("temp_f", 69)
             tgt = dev.get("target_f", 70)
             hum = dev.get("humidity")
-            badge = Text(f"🌡️ {amb}°F → {tgt}°F", style="bold bright_yellow")
+            badge = Text("🌡️ ", style="bold bright_yellow")
+            badge.append(f"Now {amb}°F", style="bold bright_white")
+            badge.append(" │ ", style="grey50")
+            badge.append(f"Set {tgt}°F", style="bold bright_yellow")
             if hum is not None and is_zoomed:
                 badge.append(f" ({hum}% RH)", style="cyan")
             return badge
@@ -374,7 +393,7 @@ class SmartHomePane(ResponsivePane):
         for idx, t_item in enumerate(tstats[:2]):
             lbl = "Up" if idx == 0 else "Down"
             summary.append(
-                f"• 🌡️ {lbl} {t_item.get('temp_f', 69)}°F→{t_item.get('target_f', 70)}°F ",
+                f"• 🌡️ {lbl}: Now {t_item.get('temp_f', 69)}°F (Set {t_item.get('target_f', 70)}°F) ",
                 style="bold bright_yellow",
             )
         if speakers:
@@ -391,7 +410,7 @@ class SmartHomePane(ResponsivePane):
         table.add_column("", width=2)
         table.add_column("DEVICE", ratio=2)
         table.add_column("ROOM", style="grey70", ratio=1)
-        table.add_column("TEMP / VOLUME", width=22 if is_zoomed else 16)
+        table.add_column("NOW / SETPOINT / VOL", width=26 if is_zoomed else 21)
         table.add_column("STATE / DETAILS", ratio=2)
 
         icons = {
