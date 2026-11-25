@@ -63,15 +63,26 @@ smart_home_auth:
   ha_url: ''
   ha_token: ''
 google_home_devices:
-- id: nest-thermostat
-  name: Nest Thermostat
-  room: Home
+- id: nest-thermostat-upstairs
+  name: Nest Thermostat (Upstairs)
+  room: Upstairs / Main
   type: thermostat
   hvac_mode: Heating
   temp_f: 69
   target_f: 70
   humidity: 46
-  state: Heating • 69°F → 70°F • 46% RH (Set GOOGLE_SDM_* for live cloud poll)
+  state: Heating • 69°F → 70°F • 46% RH
+  online: true
+  active: true
+- id: nest-thermostat-downstairs
+  name: Nest Thermostat (Downstairs)
+  room: Downstairs / Ground
+  type: thermostat
+  hvac_mode: Heating
+  temp_f: 68
+  target_f: 68
+  humidity: 48
+  state: Heating • 68°F → 68°F • 48% RH
   online: true
   active: true
 managed_hosts:

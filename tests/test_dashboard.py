@@ -37,9 +37,10 @@ def test_config_roundtrip(tmp_path: Path) -> None:
     assert loaded["profile"]["primary_host"] == "Alex-MacBook-Pro.local"
     assert loaded["profile"]["tide_station_id"] == "9414290"
     assert len(loaded["automations"]) == 4
-    # Only the single Nest Thermostat is in default config before LAN scan (no fake smoke detectors/locks)
-    assert len(loaded["google_home_devices"]) == 1
-    assert loaded["google_home_devices"][0]["name"] == "Nest Thermostat"
+    # Both Nest Thermostats (Upstairs & Downstairs) are present as 2 distinct entries
+    assert len(loaded["google_home_devices"]) == 2
+    assert loaded["google_home_devices"][0]["name"] == "Nest Thermostat (Upstairs)"
+    assert loaded["google_home_devices"][1]["name"] == "Nest Thermostat (Downstairs)"
     assert len(loaded["tasks"]) >= 3
 
 
@@ -58,15 +59,17 @@ def test_network_discovery_helpers() -> None:
     assert "google_home_devices" in scan_res
     assert len(scan_res["managed_hosts"]) >= 1
 
-    # Verify that discovering 2 physical LAN speakers yields ONLY the Nest Thermostat + 2 real speakers
+    # Verify that discovering 2 physical LAN speakers yields BOTH Nest Thermostats + 2 real speakers (4 rows total)
     two_real_speakers = [
         {"id": "cast-1", "name": "Office Speaker", "room": "Office", "type": "speaker", "volume_pct": 50},
         {"id": "cast-2", "name": "Bedroom Speaker", "room": "Bedroom", "type": "speaker", "volume_pct": 35},
     ]
     merged = merge_discovered_devices(DEFAULT_CONFIG["google_home_devices"], two_real_speakers)
-    assert len(merged) == 3
+    assert len(merged) == 4
     assert merged[0]["type"] == "thermostat"
-    assert merged[0]["name"] == "Nest Thermostat"
+    assert merged[1]["type"] == "thermostat"
+    assert merged[0]["name"] == "Nest Thermostat (Upstairs)"
+    assert merged[1]["name"] == "Nest Thermostat (Downstairs)"
     speakers_in_merged = [d for d in merged if d["type"] == "speaker"]
     assert len(speakers_in_merged) == 2
     assert [s["name"] for s in speakers_in_merged] == ["Office Speaker", "Bedroom Speaker"]
@@ -158,7 +161,9 @@ async def test_tui_panes_and_dynamic_zoom() -> None:
         await pilot.press("+")
         assert float(home_pane.devices[0]["target_f"]) == initial_target + 1.0
 
-        # Navigate down to Kitchen Nest Speaker (index 1) and adjust volume + mute
+        # Navigate down past both Nest Thermostats (indices 0 & 1) to Living Room Speaker (index 2)
+        await pilot.press("j")
+        assert home_pane.devices[home_pane.selected_idx]["type"] == "thermostat"
         await pilot.press("j")
         assert home_pane.devices[home_pane.selected_idx]["type"] == "speaker"
         initial_vol = int(home_pane.devices[home_pane.selected_idx]["volume_pct"])

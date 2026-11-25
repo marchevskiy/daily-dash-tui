@@ -89,15 +89,28 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "google_home_devices": [
         {
-            "id": "nest-thermostat",
-            "name": "Nest Thermostat",
-            "room": "Home",
+            "id": "nest-thermostat-upstairs",
+            "name": "Nest Thermostat (Upstairs)",
+            "room": "Upstairs / Main",
             "type": "thermostat",
             "hvac_mode": "Heating",
             "temp_f": 69,
             "target_f": 70,
             "humidity": 46,
-            "state": "Heating • 69°F → 70°F • 46% RH (Set GOOGLE_SDM_* for live cloud poll)",
+            "state": "Heating • 69°F → 70°F • 46% RH",
+            "online": True,
+            "active": True,
+        },
+        {
+            "id": "nest-thermostat-downstairs",
+            "name": "Nest Thermostat (Downstairs)",
+            "room": "Downstairs / Ground",
+            "type": "thermostat",
+            "hvac_mode": "Heating",
+            "temp_f": 68,
+            "target_f": 68,
+            "humidity": 48,
+            "state": "Heating • 68°F → 68°F • 48% RH",
             "online": True,
             "active": True,
         },
@@ -325,16 +338,26 @@ def merge_discovered_devices(
     existing_devices: list[dict[str, Any]],
     discovered_devices: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Keep ONLY real discovered LAN/SDM devices (your actual speakers and Nest Thermostat).
-    If no cloud SDM token is configured yet for the Nest Thermostat, preserve your single
-    Nest Thermostat entry at Row #1 alongside your real discovered Cast speakers.
+    """Keep ONLY real discovered LAN/SDM devices (your actual speakers and both Nest Thermostats).
+    - If 2+ thermostats are discovered via SDM / LAN ARP, use them directly.
+    - If only 1 thermostat was discovered on LAN (e.g. second thermostat was asleep during ARP scan),
+      pair it with the second configured Nest Thermostat so both thermostats remain visible.
+    - If 0 thermostats were discovered on LAN (no SDM token yet), preserve all configured Nest Thermostats (both of them!).
     """
     disc_thermostats = [d for d in discovered_devices if d.get("type") == "thermostat"]
     disc_speakers = [d for d in discovered_devices if d.get("type") == "speaker"]
     disc_other = [d for d in discovered_devices if d.get("type") not in ("thermostat", "speaker")]
 
     existing_thermostats = [d for d in existing_devices if d.get("type") == "thermostat"]
-    final_thermostats = disc_thermostats if disc_thermostats else existing_thermostats[:1]
+
+    if len(disc_thermostats) >= 2:
+        final_thermostats = disc_thermostats
+    elif len(disc_thermostats) == 1 and len(existing_thermostats) >= 2:
+        final_thermostats = [disc_thermostats[0], existing_thermostats[1]]
+    elif disc_thermostats:
+        final_thermostats = disc_thermostats
+    else:
+        final_thermostats = existing_thermostats
 
     return (final_thermostats + disc_speakers + disc_other)[:10]
 

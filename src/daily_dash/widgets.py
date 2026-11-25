@@ -365,16 +365,16 @@ class SmartHomePane(ResponsivePane):
         _, h, is_zoomed = self._dims()
         active_count = sum(1 for d in self.devices if d.get("active"))
 
-        # Compute quick header averages for thermostats & speakers
+        # Compute quick header summary for all thermostats & speakers
         tstats = [d for d in self.devices if d.get("type") == "thermostat"]
         speakers = [d for d in self.devices if d.get("type") == "speaker"]
         summary = Text()
         summary.append("SF Smart Home: ", style="bold #34d399")
         summary.append(f"{active_count}/{len(self.devices)} active ", style="white")
-        if tstats:
-            t0 = tstats[0]
+        for idx, t_item in enumerate(tstats[:2]):
+            lbl = "Up" if idx == 0 else "Down"
             summary.append(
-                f"• 🌡️ {t0.get('temp_f', 69)}°F (Set {t0.get('target_f', 70)}°F) ",
+                f"• 🌡️ {lbl} {t_item.get('temp_f', 69)}°F→{t_item.get('target_f', 70)}°F ",
                 style="bold bright_yellow",
             )
         if speakers:
