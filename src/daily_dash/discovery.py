@@ -9,6 +9,7 @@ import re
 import shutil
 import socket
 import subprocess
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -18,21 +19,11 @@ import httpx
 
 # Common ports used by Google Cast / Nest / Matter / SSH / macOS
 PORT_SIGNATURES: list[tuple[int, str, str]] = [
-    (8008, "speaker", "Google Cast / Nest Device (HTTP :8008)"),
-    (8009, "speaker", "Google Cast / Nest Hub (TLS :8009)"),
-    (8443, "speaker", "Google Home Local API (:8443)"),
+    (8009, "speaker", "Google Cast / Nest Speaker (TLS :8009)"),
     (5540, "thermostat", "Matter Smart Home Device (:5540)"),
     (22, "host", "SSH Managed Machine (:22)"),
     (548, "host", "macOS AFP / MacBook (:548)"),
     (5900, "host", "macOS Screen Sharing / VNC (:5900)"),
-]
-
-MDNS_SERVICES: list[tuple[str, str, str]] = [
-    ("_googlecast._tcp", "speaker", "Google Cast / Nest"),
-    ("_matter._tcp", "thermostat", "Matter Device"),
-    ("_hap._tcp", "lock", "HomeKit / Smart Home Bridge"),
-    ("_ssh._tcp", "host", "SSH Host"),
-    ("_companion-link._tcp", "host", "Apple / MacBook"),
 ]
 
 
@@ -82,6 +73,72 @@ def _fetch_google_cast_eureka_info(ip: str, timeout: float = 0.6) -> dict[str, A
     return None
 
 
+def discover_cast_speakers_zeroconf(timeout_sec: float = 2.5) -> list[dict[str, Any]]:
+    """Discover physical Google Home / Nest speakers via Zeroconf (`_googlecast._tcp.local.`),
+    filtering out virtual speaker groups (`cast_type == 'group'`), TVs/Chromecast video dongles
+    unless audio-capable, and duplicate mDNS announcements.
+    """
+    speakers: list[dict[str, Any]] = []
+    seen_uuids: set[str] = set()
+    seen_ips: set[str] = set()
+
+    try:
+        import pychromecast
+        import zeroconf
+
+        zconf = zeroconf.Zeroconf()
+        listener = pychromecast.SimpleCastListener()
+        browser = pychromecast.CastBrowser(listener, zconf)
+        browser.start_discovery()
+        time.sleep(timeout_sec)
+        browser.stop_discovery()
+
+        for cast_uuid, service in list(browser.devices.items()):
+            u_str = str(cast_uuid)
+            ip = str(getattr(service, "host", "") or "")
+            port = int(getattr(service, "port", 8009) or 8009)
+            model = str(getattr(service, "model_name", "") or "Google Nest")
+            friendly = str(getattr(service, "friendly_name", "") or f"Nest Speaker ({ip})")
+            cast_type = str(getattr(service, "cast_type", "audio") or "audio")
+
+            # Filter out virtual multi-room speaker groups (which listen on non-8009 ports or have cast_type=='group')
+            if cast_type == "group" or port != 8009:
+                continue
+            if u_str in seen_uuids or (ip and ip in seen_ips):
+                continue
+
+            seen_uuids.add(u_str)
+            if ip:
+                seen_ips.add(ip)
+
+            vol_info = probe_cast_volume_status(ip, friendly_name=friendly, model_name=model, timeout=1.5) if ip else None
+            vol_pct = (vol_info or {}).get("volume_pct", 40)
+            muted = (vol_info or {}).get("muted", False)
+            media = (vol_info or {}).get("track") or (vol_info or {}).get("app_name") or model
+
+            dev: dict[str, Any] = {
+                "id": f"cast-{ip.replace('.', '-')}" if ip else f"cast-{u_str[:8]}",
+                "name": friendly,
+                "room": friendly,
+                "model": model,
+                "type": "speaker",
+                "volume_pct": vol_pct,
+                "muted": muted,
+                "media": media,
+                "ip": ip,
+                "online": True,
+                "active": True,
+            }
+            dev["state"] = format_smart_device_state(dev)
+            speakers.append(dev)
+
+        zconf.close()
+    except Exception:
+        pass
+
+    return speakers
+
+
 def probe_cast_volume_status(
     ip: str,
     friendly_name: str | None = None,
@@ -109,14 +166,16 @@ def probe_cast_volume_status(
         )
         cast.wait(timeout=timeout)
         status = cast.status
+        if status is None or status.volume_level is None:
+            cast.disconnect(timeout=0.5)
+            return None
+
         mc = cast.media_controller.status if hasattr(cast, "media_controller") else None
-        vol_pct = int(round(float(status.volume_level) * 100)) if status and status.volume_level is not None else None
-        muted = bool(status.volume_muted) if status else False
-        app_name = (status.display_name if status and status.display_name else None) or "Idle"
+        vol_pct = int(round(float(status.volume_level) * 100))
+        muted = bool(status.volume_muted)
+        app_name = (status.display_name if status.display_name else None) or "Idle"
         track = getattr(mc, "title", None) if mc else None
         cast.disconnect(timeout=0.5)
-        if vol_pct is None:
-            return None
         return {
             "volume_pct": max(0, min(100, vol_pct)),
             "muted": muted,
@@ -156,73 +215,170 @@ def set_cast_volume_on_lan(
         return False
 
 
-def fetch_thermostat_telemetry(
-    device: dict[str, Any],
-    timeout: float = 1.5,
-) -> dict[str, Any] | None:
-    """Pull live ambient temperature, target setpoint, humidity, and HVAC mode for a thermostat:
-    1. Google Nest SDM API (if `GOOGLE_SDM_PROJECT_ID` and `GOOGLE_SDM_ACCESS_TOKEN` are set in env).
-    2. Home Assistant / Local Matter REST bridge (if `HA_URL` and `HA_TOKEN` are set in env).
-    3. Local IP HTTP JSON endpoint on the thermostat (e.g. `http://<ip>/tstat` or `:8080/status`).
+def _refresh_google_sdm_access_token(
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    timeout: float = 3.0,
+) -> str | None:
+    """Exchange a Google OAuth refresh_token for a fresh Nest SDM access_token."""
+    try:
+        resp = httpx.post(
+            "https://www.googleapis.com/oauth2/v4/token",
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+            timeout=timeout,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("access_token")
+    except Exception:
+        pass
+    return None
+
+
+def fetch_all_nest_sdm_thermostats(
+    auth_cfg: dict[str, Any] | None = None,
+    timeout: float = 3.0,
+) -> list[dict[str, Any]]:
+    """Pull all real Nest Thermostats from the Google Smart Device Management (SDM) API
+    or Home Assistant bridge (`HA_URL` / `HA_TOKEN`).
+    Supports either:
+      - `GOOGLE_SDM_PROJECT_ID` + `GOOGLE_SDM_ACCESS_TOKEN`
+      - `GOOGLE_SDM_PROJECT_ID` + `GOOGLE_SDM_CLIENT_ID` + `GOOGLE_SDM_CLIENT_SECRET` + `GOOGLE_SDM_REFRESH_TOKEN`
+      - `smart_home_auth` block in `~/.config/daily-dash/config.yaml`
     """
-    # 1. Check Google Nest SDM API if configured
-    sdm_project = os.environ.get("GOOGLE_SDM_PROJECT_ID")
-    sdm_token = os.environ.get("GOOGLE_SDM_ACCESS_TOKEN")
-    if sdm_project and sdm_token:
+    cfg = auth_cfg or {}
+    project_id = os.environ.get("GOOGLE_SDM_PROJECT_ID") or cfg.get("google_sdm_project_id")
+    access_token = os.environ.get("GOOGLE_SDM_ACCESS_TOKEN") or cfg.get("google_sdm_access_token")
+    client_id = os.environ.get("GOOGLE_SDM_CLIENT_ID") or cfg.get("google_sdm_client_id")
+    client_secret = os.environ.get("GOOGLE_SDM_CLIENT_SECRET") or cfg.get("google_sdm_client_secret")
+    refresh_token = os.environ.get("GOOGLE_SDM_REFRESH_TOKEN") or cfg.get("google_sdm_refresh_token")
+
+    if project_id and not access_token and client_id and client_secret and refresh_token:
+        access_token = _refresh_google_sdm_access_token(client_id, client_secret, refresh_token, timeout=timeout)
+
+    results: list[dict[str, Any]] = []
+
+    if project_id and access_token:
         try:
-            url = f"https://smartdevicemanagement.googleapis.com/v1/enterprises/{sdm_project}/devices"
+            url = f"https://smartdevicemanagement.googleapis.com/v1/enterprises/{project_id}/devices"
             resp = httpx.get(
                 url,
-                headers={"Authorization": f"Bearer {sdm_token}"},
+                headers={"Authorization": f"Bearer {access_token}"},
                 timeout=timeout,
             )
             if resp.status_code == 200:
-                devs = resp.json().get("devices", [])
-                for d in devs:
+                for idx, d in enumerate(resp.json().get("devices", [])):
                     traits = d.get("traits", {})
-                    if "sdm.devices.traits.Temperature" in traits:
-                        amb_c = float(
-                            traits["sdm.devices.traits.Temperature"].get("ambientTemperatureCelsius", 20.5)
-                        )
-                        amb_f = round(amb_c * 9.0 / 5.0 + 32.0, 1)
-                        hum = traits.get("sdm.devices.traits.Humidity", {}).get("ambientHumidityPercent", 48)
-                        mode = traits.get("sdm.devices.traits.ThermostatMode", {}).get("mode", "HEAT")
-                        sp_trait = traits.get("sdm.devices.traits.ThermostatTemperatureSetpoint", {})
-                        target_c = sp_trait.get("heatCelsius") or sp_trait.get("coolCelsius") or 21.1
-                        target_f = round(float(target_c) * 9.0 / 5.0 + 32.0, 1)
-                        return {
-                            "temp_f": amb_f,
-                            "target_f": target_f,
-                            "humidity": int(hum),
-                            "hvac_mode": str(mode).capitalize(),
-                        }
+                    if "sdm.devices.traits.Temperature" not in traits:
+                        continue
+                    amb_c = float(
+                        traits["sdm.devices.traits.Temperature"].get("ambientTemperatureCelsius", 20.5)
+                    )
+                    amb_f = round(amb_c * 9.0 / 5.0 + 32.0, 1)
+                    hum = int(
+                        traits.get("sdm.devices.traits.Humidity", {}).get("ambientHumidityPercent", 48)
+                    )
+                    mode = str(
+                        traits.get("sdm.devices.traits.ThermostatMode", {}).get("mode", "HEAT")
+                    ).capitalize()
+                    hvac_status = str(
+                        traits.get("sdm.devices.traits.ThermostatHvac", {}).get("status", "OFF")
+                    )
+                    sp_trait = traits.get("sdm.devices.traits.ThermostatTemperatureSetpoint", {})
+                    target_c = sp_trait.get("heatCelsius") or sp_trait.get("coolCelsius") or amb_c
+                    target_f = round(float(target_c) * 9.0 / 5.0 + 32.0, 1)
+
+                    custom_name = (
+                        traits.get("sdm.devices.traits.Info", {}).get("customName")
+                        or d.get("parentRelations", [{}])[0].get("displayName")
+                        or f"Nest Thermostat {idx + 1}"
+                    )
+                    room_name = d.get("parentRelations", [{}])[0].get("displayName") or "Home"
+                    active = mode.upper() != "OFF"
+
+                    t_entry: dict[str, Any] = {
+                        "id": f"nest-sdm-{idx+1}",
+                        "name": custom_name if "Thermostat" in custom_name else f"{custom_name} Nest Thermostat",
+                        "room": room_name,
+                        "type": "thermostat",
+                        "hvac_mode": "Heating" if hvac_status == "HEATING" else mode,
+                        "temp_f": amb_f,
+                        "target_f": target_f,
+                        "humidity": hum,
+                        "online": True,
+                        "active": active,
+                        "source": "Nest SDM Live",
+                    }
+                    t_entry["state"] = format_smart_device_state(t_entry)
+                    results.append(t_entry)
         except Exception:
             pass
 
-    # 2. Check Home Assistant / Matter bridge if configured
-    ha_url = os.environ.get("HA_URL")
-    ha_token = os.environ.get("HA_TOKEN")
-    entity_id = device.get("entity_id")
-    if ha_url and ha_token and entity_id:
+    # Fallback: check Home Assistant REST API (`climate.*` entities) if HA_URL & HA_TOKEN are configured
+    ha_url = os.environ.get("HA_URL") or cfg.get("ha_url")
+    ha_token = os.environ.get("HA_TOKEN") or cfg.get("ha_token")
+    if not results and ha_url and ha_token:
         try:
             resp = httpx.get(
-                f"{ha_url.rstrip('/')}/api/states/{entity_id}",
+                f"{ha_url.rstrip('/')}/api/states",
                 headers={"Authorization": f"Bearer {ha_token}"},
                 timeout=timeout,
             )
             if resp.status_code == 200:
-                payload = resp.json()
-                attrs = payload.get("attributes", {})
-                return {
-                    "temp_f": float(attrs.get("current_temperature", device.get("temp_f", 69.0))),
-                    "target_f": float(attrs.get("temperature", device.get("target_f", 70.0))),
-                    "humidity": int(attrs.get("current_humidity", device.get("humidity", 48))),
-                    "hvac_mode": str(payload.get("state", "Heating")).capitalize(),
-                }
+                for entity in resp.json():
+                    eid = str(entity.get("entity_id", ""))
+                    if not eid.startswith("climate."):
+                        continue
+                    attrs = entity.get("attributes", {})
+                    friendly = attrs.get("friendly_name") or eid
+                    amb_f = round(float(attrs.get("current_temperature", 69.0)), 1)
+                    target_f = round(float(attrs.get("temperature", 70.0)), 1)
+                    hum = int(attrs.get("current_humidity", 48))
+                    mode = str(entity.get("state", "heat")).capitalize()
+                    t_entry = {
+                        "id": eid,
+                        "entity_id": eid,
+                        "name": friendly,
+                        "room": friendly.replace("Thermostat", "").strip() or "Home",
+                        "type": "thermostat",
+                        "hvac_mode": mode,
+                        "temp_f": amb_f,
+                        "target_f": target_f,
+                        "humidity": hum,
+                        "online": True,
+                        "active": mode.lower() != "off",
+                        "source": "Home Assistant Live",
+                    }
+                    t_entry["state"] = format_smart_device_state(t_entry)
+                    results.append(t_entry)
         except Exception:
             pass
 
-    # 3. Check local IP thermostat endpoint if IP is available on LAN
+    return results
+
+
+def fetch_thermostat_telemetry(
+    device: dict[str, Any],
+    auth_cfg: dict[str, Any] | None = None,
+    timeout: float = 1.5,
+) -> dict[str, Any] | None:
+    """Pull live ambient temperature, target setpoint, humidity, and HVAC mode for a thermostat."""
+    sdm_list = fetch_all_nest_sdm_thermostats(auth_cfg=auth_cfg, timeout=timeout)
+    if sdm_list:
+        # Match by room or name, or return the first thermostat
+        dev_name = str(device.get("name", "")).lower()
+        dev_room = str(device.get("room", "")).lower()
+        for sdm_t in sdm_list:
+            if sdm_t["room"].lower() in dev_room or sdm_t["name"].lower() in dev_name:
+                return sdm_t
+        return sdm_list[0]
+
+    # Check local IP thermostat endpoint if IP is available on LAN
     ip = device.get("ip")
     if ip and _probe_tcp_port(ip, 80, timeout=0.25):
         for path in ("/tstat", "/status", "/api/v1/status"):
@@ -258,11 +414,14 @@ def format_smart_device_state(dev: dict[str, Any]) -> str:
         sensor_f = dev.get("downstairs_temp_f")
         humidity = dev.get("humidity")
         mode = dev.get("hvac_mode") or ("Heating" if active else "Eco Mode")
+        src = dev.get("source")
         parts = [f"{mode} • {temp_f}°F → {target_f}°F"]
         if sensor_f is not None:
             parts.append(f"Downstairs {sensor_f}°F")
-        elif humidity is not None:
+        if humidity is not None:
             parts.append(f"{humidity}% RH")
+        if src:
+            parts.append(f"[{src}]")
         return " • ".join(parts)
 
     if dtype == "speaker":
@@ -277,12 +436,17 @@ def format_smart_device_state(dev: dict[str, Any]) -> str:
     return str(dev.get("state", "Online" if active else "Standby"))
 
 
-def refresh_smart_devices_telemetry(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Poll live volume levels for Google Cast speakers and live temperatures for thermostats."""
-    for dev in devices:
+def refresh_smart_devices_telemetry(
+    devices: list[dict[str, Any]],
+    auth_cfg: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Poll live volume levels for Google Cast speakers and live temperatures for Nest thermostats."""
+    sdm_thermostats = fetch_all_nest_sdm_thermostats(auth_cfg=auth_cfg, timeout=2.0)
+
+    for idx, dev in enumerate(devices):
         dtype = dev.get("type", "")
         ip = dev.get("ip")
-        if dtype == "speaker" and ip and _probe_tcp_port(ip, 8009, timeout=0.25):
+        if dtype == "speaker" and ip and _probe_tcp_port(ip, 8009, timeout=0.35):
             cast_info = probe_cast_volume_status(ip, friendly_name=dev.get("name"))
             if cast_info:
                 dev["volume_pct"] = cast_info["volume_pct"]
@@ -293,83 +457,23 @@ def refresh_smart_devices_telemetry(devices: list[dict[str, Any]]) -> list[dict[
                     dev["media"] = cast_info["app_name"]
                 dev["state"] = format_smart_device_state(dev)
         elif dtype == "thermostat":
-            tstat = fetch_thermostat_telemetry(dev)
-            if tstat:
-                dev["temp_f"] = tstat["temp_f"]
-                dev["target_f"] = tstat["target_f"]
-                dev["humidity"] = tstat["humidity"]
-                dev["hvac_mode"] = tstat["hvac_mode"]
+            if sdm_thermostats:
+                matched = sdm_thermostats[min(idx, len(sdm_thermostats) - 1)]
+                dev["temp_f"] = matched["temp_f"]
+                dev["target_f"] = matched["target_f"]
+                dev["humidity"] = matched["humidity"]
+                dev["hvac_mode"] = matched["hvac_mode"]
+                dev["source"] = matched.get("source", "Nest SDM Live")
                 dev["state"] = format_smart_device_state(dev)
+            else:
+                tstat = fetch_thermostat_telemetry(dev, auth_cfg=auth_cfg)
+                if tstat:
+                    dev["temp_f"] = tstat["temp_f"]
+                    dev["target_f"] = tstat["target_f"]
+                    dev["humidity"] = tstat["humidity"]
+                    dev["hvac_mode"] = tstat["hvac_mode"]
+                    dev["state"] = format_smart_device_state(dev)
     return devices
-
-
-def discover_mdns_services(timeout_sec: float = 2.0) -> list[dict[str, Any]]:
-    """Run mDNS/Bonjour discovery using macOS `dns-sd` or Linux `avahi-browse`."""
-    discovered: list[dict[str, Any]] = []
-
-    if shutil.which("avahi-browse"):
-        try:
-            proc = subprocess.run(
-                ["avahi-browse", "-a", "-t", "-r", "-p"],
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec + 1.0,
-            )
-            for line in proc.stdout.splitlines():
-                if not line.startswith("="):
-                    continue
-                parts = line.split(";")
-                if len(parts) >= 9:
-                    svc_name = parts[3]
-                    svc_type = parts[4]
-                    host = parts[6]
-                    ip = parts[7]
-                    port = parts[8]
-                    discovered.append(
-                        {
-                            "name": svc_name,
-                            "service": svc_type,
-                            "hostname": host,
-                            "ip": ip,
-                            "port": port,
-                            "source": "mDNS (avahi)",
-                        }
-                    )
-        except Exception:
-            pass
-
-    elif shutil.which("dns-sd"):
-        for svc, dtype, label in MDNS_SERVICES[:3]:
-            try:
-                proc = subprocess.Popen(
-                    ["dns-sd", "-B", svc, "local."],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                try:
-                    out, _ = proc.communicate(timeout=timeout_sec)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    out, _ = proc.communicate()
-
-                for line in (out or "").splitlines():
-                    if "Add" in line and svc in line:
-                        instance = line.split(svc)[-1].strip().lstrip(".")
-                        if instance:
-                            discovered.append(
-                                {
-                                    "name": instance,
-                                    "service": svc,
-                                    "type": dtype,
-                                    "label": label,
-                                    "source": "Bonjour (dns-sd)",
-                                }
-                            )
-            except Exception:
-                continue
-
-    return discovered
 
 
 def parse_arp_neighbors() -> list[dict[str, str]]:
@@ -444,16 +548,25 @@ def scan_network(
     subnet: str | None = None,
     timeout: float = 0.25,
     max_hosts: int = 64,
+    auth_cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Scan the local network (mDNS + ARP cache + concurrent TCP port probes)
-    and return discovered `google_home_devices` (with live Cast volume & thermostat temps)
-    and `managed_hosts`.
+    """Scan the local network:
+    1. Zeroconf CastBrowser (`_googlecast._tcp.local.`) for verified physical Google Home/Nest speakers
+       (deduplicated by UUID and IP, excluding virtual speaker groups and port :8443 router proxies).
+    2. Fallback TCP :8009 Cast handshake verification on active LAN IPs if Zeroconf multicast is blocked.
+    3. Google Nest SDM API / Home Assistant / Matter (:5540) for live Nest Thermostat temperatures.
     """
     local_ip, detected_subnet = get_local_ip_and_subnet()
     target_subnet = subnet or detected_subnet
 
-    mdns_items = discover_mdns_services(timeout_sec=1.2)
     arp_items = parse_arp_neighbors()
+
+    # 1. Discover verified physical Cast speakers via Zeroconf CastBrowser
+    discovered_speakers = discover_cast_speakers_zeroconf(timeout_sec=1.8 if max_hosts > 10 else 0.4)
+    seen_speaker_ips: set[str] = {s["ip"] for s in discovered_speakers if s.get("ip")}
+
+    # 2. Discover live Nest Thermostats via SDM API or Home Assistant if configured
+    discovered_thermostats = fetch_all_nest_sdm_thermostats(auth_cfg=auth_cfg, timeout=2.0)
 
     candidate_ips: list[str] = [n["ip"] for n in arp_items]
     try:
@@ -467,7 +580,6 @@ def scan_network(
 
     candidate_ips = candidate_ips[:max_hosts]
 
-    google_home_devices: list[dict[str, Any]] = []
     managed_hosts: list[dict[str, Any]] = [
         {
             "hostname": socket.gethostname(),
@@ -487,41 +599,45 @@ def scan_network(
         found_hosts: list[dict[str, Any]] = []
         host_label = arp_by_ip.get(ip, {}).get("hostname") or ip
 
-        # Check Google Cast / Google Home ports (:8008 / :8009 / :8443)
-        is_cast = (
-            _probe_tcp_port(ip, 8008, timeout)
-            or _probe_tcp_port(ip, 8009, timeout)
-            or _probe_tcp_port(ip, 8443, timeout)
-        )
-        if is_cast:
+        # Only treat an IP as a Google Home speaker if TCP :8009 (Cast TLS) is open
+        # AND a real pychromecast Cast status handshake succeeds (eliminates Nest Wifi :8443 false positives!)
+        if ip not in seen_speaker_ips and _probe_tcp_port(ip, 8009, timeout):
             eureka = _fetch_google_cast_eureka_info(ip, timeout=0.5)
-            dev_name = (eureka or {}).get("name") or f"Google Home Speaker ({host_label})"
-            room = (eureka or {}).get("room_name") or "LAN"
-            model = (eureka or {}).get("detail", {}).get("model_name") or "Google Cast / Nest"
-            cast_vol = probe_cast_volume_status(ip, friendly_name=dev_name, model_name=model, timeout=1.2)
-            vol_pct = (cast_vol or {}).get("volume_pct", 40)
-            muted = (cast_vol or {}).get("muted", False)
-            app_label = (cast_vol or {}).get("track") or (cast_vol or {}).get("app_name") or model
-            dev_entry = {
-                "id": f"gh-{ip.replace('.', '-')}",
-                "name": dev_name,
-                "room": room,
-                "type": "speaker",
-                "volume_pct": vol_pct,
-                "muted": muted,
-                "media": app_label,
-                "ip": ip,
-                "online": True,
-                "active": True,
-            }
-            dev_entry["state"] = format_smart_device_state(dev_entry)
-            found_gh.append(dev_entry)
+            dev_name = (eureka or {}).get("name")
+            model = (eureka or {}).get("detail", {}).get("model_name") or "Google Nest Speaker"
+            cast_vol = probe_cast_volume_status(
+                ip,
+                friendly_name=dev_name or f"Nest Speaker ({host_label})",
+                model_name=model,
+                timeout=1.2,
+            )
+            # Only add if it is a verified Cast device that responded to Cast protocol
+            if cast_vol is not None or eureka is not None:
+                final_name = dev_name or f"Nest Speaker ({host_label})"
+                room = (eureka or {}).get("room_name") or final_name
+                vol_pct = (cast_vol or {}).get("volume_pct", 40)
+                muted = (cast_vol or {}).get("muted", False)
+                app_label = (cast_vol or {}).get("track") or (cast_vol or {}).get("app_name") or model
+                dev_entry = {
+                    "id": f"cast-{ip.replace('.', '-')}",
+                    "name": final_name,
+                    "room": room,
+                    "type": "speaker",
+                    "volume_pct": vol_pct,
+                    "muted": muted,
+                    "media": app_label,
+                    "ip": ip,
+                    "online": True,
+                    "active": True,
+                }
+                dev_entry["state"] = format_smart_device_state(dev_entry)
+                found_gh.append(dev_entry)
 
         # Check Matter / Smart Thermostat port (:5540)
         if _probe_tcp_port(ip, 5540, timeout):
             tstat_dev: dict[str, Any] = {
                 "id": f"matter-{ip.replace('.', '-')}",
-                "name": f"Thermostat ({host_label})",
+                "name": f"Nest Thermostat ({host_label})",
                 "room": "Smart Home LAN",
                 "type": "thermostat",
                 "temp_f": 69,
@@ -532,7 +648,7 @@ def scan_network(
                 "online": True,
                 "active": True,
             }
-            live_t = fetch_thermostat_telemetry(tstat_dev, timeout=0.8)
+            live_t = fetch_thermostat_telemetry(tstat_dev, auth_cfg=auth_cfg, timeout=0.8)
             if live_t:
                 tstat_dev.update(live_t)
             tstat_dev["state"] = format_smart_device_state(tstat_dev)
@@ -557,43 +673,24 @@ def scan_network(
 
         return found_gh, found_hosts
 
+    extra_gh: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=24) as pool:
         for gh_list, host_list in pool.map(_inspect_ip, candidate_ips):
-            google_home_devices.extend(gh_list)
+            extra_gh.extend(gh_list)
             managed_hosts.extend(host_list)
 
-    # Also incorporate mDNS discoveries not caught by IP scan
-    seen_names = {d["name"] for d in google_home_devices}
-    for item in mdns_items:
-        name = item.get("name", "")
-        if name and name not in seen_names and item.get("type") != "host":
-            seen_names.add(name)
-            dtype = item.get("type", "speaker")
-            m_dev: dict[str, Any] = {
-                "id": f"mdns-{len(google_home_devices)+1}",
-                "name": name,
-                "room": "mDNS / Bonjour",
-                "type": dtype,
-                "online": True,
-                "active": True,
-            }
-            if dtype == "speaker":
-                m_dev["volume_pct"] = 40
-                m_dev["muted"] = False
-                m_dev["media"] = item.get("source", "Cast Ready")
-            elif dtype == "thermostat":
-                m_dev["temp_f"] = 69
-                m_dev["target_f"] = 70
-                m_dev["humidity"] = 48
-                m_dev["hvac_mode"] = "Heating"
-            m_dev["state"] = format_smart_device_state(m_dev)
-            google_home_devices.append(m_dev)
+    google_home_devices: list[dict[str, Any]] = []
+    google_home_devices.extend(discovered_thermostats)
+    google_home_devices.extend(discovered_speakers)
+    for item in extra_gh:
+        if item.get("ip") not in seen_speaker_ips:
+            google_home_devices.append(item)
 
     return {
         "local_ip": local_ip,
         "subnet": target_subnet,
         "arp_neighbors": arp_items,
-        "mdns_services": mdns_items,
+        "mdns_services": [],
         "google_home_devices": google_home_devices,
         "managed_hosts": managed_hosts,
     }

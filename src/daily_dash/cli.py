@@ -17,6 +17,7 @@ from daily_dash.app import DailyDashApp
 from daily_dash.config import (
     get_default_config_path,
     load_config,
+    merge_discovered_devices,
     save_config,
     write_sample_config,
 )
@@ -133,14 +134,13 @@ def _run_interactive_wizard(console: Console, config: dict[str, Any], target_pat
     )
 
     if Confirm.ask("Scan your local network (LAN / mDNS / Google Cast / Matter) for devices now?", default=True):
-        res = scan_network()
+        res = scan_network(auth_cfg=config.get("smart_home_auth"))
         _print_scan_results(console, res)
         if res.get("google_home_devices"):
-            existing_names = {d["name"] for d in res["google_home_devices"]}
-            merged = list(res["google_home_devices"]) + [
-                d for d in config.get("google_home_devices", []) if d["name"] not in existing_names
-            ]
-            config["google_home_devices"] = merged[:8]
+            config["google_home_devices"] = merge_discovered_devices(
+                config.get("google_home_devices", []),
+                res["google_home_devices"],
+            )
         if res.get("managed_hosts"):
             existing_ips = {h.get("ip") for h in res["managed_hosts"]}
             merged_h = list(res["managed_hosts"]) + [
@@ -195,14 +195,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.scan_network:
-        res = scan_network(subnet=args.subnet)
+        res = scan_network(subnet=args.subnet, auth_cfg=config.get("smart_home_auth"))
         _print_scan_results(console, res)
         if res.get("google_home_devices"):
-            existing_names = {d["name"] for d in res["google_home_devices"]}
-            config["google_home_devices"] = (
-                list(res["google_home_devices"])
-                + [d for d in config.get("google_home_devices", []) if d["name"] not in existing_names]
-            )[:8]
+            config["google_home_devices"] = merge_discovered_devices(
+                config.get("google_home_devices", []),
+                res["google_home_devices"],
+            )
         if res.get("managed_hosts"):
             existing_ips = {h.get("ip") for h in res["managed_hosts"]}
             config["managed_hosts"] = (

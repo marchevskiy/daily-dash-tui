@@ -42,6 +42,8 @@ def test_config_roundtrip(tmp_path: Path) -> None:
 
 
 def test_network_discovery_helpers() -> None:
+    from daily_dash.config import DEFAULT_CONFIG, merge_discovered_devices
+
     local_ip, subnet = get_local_ip_and_subnet()
     assert "." in local_ip
     assert "/24" in subnet
@@ -53,6 +55,19 @@ def test_network_discovery_helpers() -> None:
     assert "managed_hosts" in scan_res
     assert "google_home_devices" in scan_res
     assert len(scan_res["managed_hosts"]) >= 1
+
+    # Verify that discovering 2 physical LAN speakers replaces the 2 placeholder speakers
+    # (so we get exactly 2 speakers, not 4+ speakers) while keeping the Nest Thermostat at index 0
+    two_real_speakers = [
+        {"id": "cast-1", "name": "Office Speaker", "room": "Office", "type": "speaker", "volume_pct": 50},
+        {"id": "cast-2", "name": "Bedroom Speaker", "room": "Bedroom", "type": "speaker", "volume_pct": 35},
+    ]
+    merged = merge_discovered_devices(DEFAULT_CONFIG["google_home_devices"], two_real_speakers)
+    assert merged[0]["type"] == "thermostat"
+    assert merged[0]["name"] == "Nest Thermostat"
+    speakers_in_merged = [d for d in merged if d["type"] == "speaker"]
+    assert len(speakers_in_merged) == 2
+    assert [s["name"] for s in speakers_in_merged] == ["Office Speaker", "Bedroom Speaker"]
 
 
 def test_google_sync_time_formatter() -> None:
@@ -116,9 +131,10 @@ async def test_tui_panes_and_dynamic_zoom() -> None:
         assert len(extras_pane.automations) == 4
         assert cal_pane is not None
 
-        # Focus pane 2 (Smart Home), toggle thermostat, and adjust target temperature with +
+        # Focus pane 2 (Smart Home), toggle Nest Thermostat (index 0), and adjust target temperature with +
         await pilot.press("2")
         assert app.focused == home_pane
+        assert home_pane.devices[0]["type"] == "thermostat"
         initial_state = home_pane.devices[0]["active"]
         await pilot.press("space")
         assert home_pane.devices[0]["active"] is not initial_state
@@ -126,8 +142,7 @@ async def test_tui_panes_and_dynamic_zoom() -> None:
         await pilot.press("+")
         assert float(home_pane.devices[0]["target_f"]) == initial_target + 1.0
 
-        # Navigate down to Kitchen Nest Hub Max speaker (index 2) and adjust volume + mute
-        await pilot.press("j")
+        # Navigate down to Kitchen Nest Speaker (index 1) and adjust volume + mute
         await pilot.press("j")
         assert home_pane.devices[home_pane.selected_idx]["type"] == "speaker"
         initial_vol = int(home_pane.devices[home_pane.selected_idx]["volume_pct"])

@@ -54,48 +54,45 @@ automations:
   last_checked: 2026-11-25 08:18 PST
   details: ''
   last_updated: '2021-09-17'
+smart_home_auth:
+  google_sdm_project_id: ''
+  google_sdm_client_id: ''
+  google_sdm_client_secret: ''
+  google_sdm_refresh_token: ''
+  google_sdm_access_token: ''
+  ha_url: ''
+  ha_token: ''
 google_home_devices:
-- id: sf-thermostat-upstairs
-  name: Upstairs Nest Thermostat
-  room: Main Living / 2F
+- id: sf-nest-thermostat
+  name: Nest Thermostat
+  room: Hallway / Main
   type: thermostat
   hvac_mode: Heating
   temp_f: 69
   target_f: 70
   downstairs_temp_f: 68
   humidity: 46
-  state: Heating • 69°F → 70°F • Downstairs 68°F
-  online: true
-  active: true
-- id: sf-thermostat-downstairs
-  name: Downstairs Zone / Mudroom Sensor
-  room: Ground Floor / 1F
-  type: thermostat
-  hvac_mode: Balanced
-  temp_f: 68
-  target_f: 68
-  humidity: 48
-  state: Balanced • 68°F → 68°F • 48% RH
+  state: Heating • 69°F → 70°F • Downstairs 68°F • 46% RH
   online: true
   active: true
 - id: sf-kitchen-nest-hub
-  name: Kitchen Nest Hub Max
+  name: Kitchen Nest Speaker
   room: Kitchen
   type: speaker
   volume_pct: 45
   muted: false
-  media: 'Playing: KQED / Lo-Fi Radio'
-  state: 'Playing: KQED / Lo-Fi Radio • Vol 45%'
+  media: KQED / Cast Ready
+  state: KQED / Cast Ready • Vol 45%
   online: true
   active: true
 - id: sf-living-nest-audio
-  name: Living Room & Nursery Nest Audio
-  room: Living / Nursery
+  name: Living Room Nest Speaker
+  room: Living Room
   type: speaker
   volume_pct: 30
   muted: false
-  media: White Noise / Cast Ready
-  state: White Noise / Cast Ready • Vol 30%
+  media: Cast Ready
+  state: Cast Ready • Vol 30%
   online: true
   active: true
 - id: sf-nest-protect
@@ -253,7 +250,7 @@ calendar_events:
 - time: 09:00 - 13:00
   title: Daly City Farmers Market at Serramonte (Special Pre-Thanksgiving Market)
   location: Serramonte Center
-  status: upcoming
+  status: completed
   calendar: Family
 - time: 15:30 - 16:00
   title: '[MJ] Afternoon Kosmo Walk (before dark)'

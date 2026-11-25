@@ -78,55 +78,51 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "details": "Auto-archive filter deployment active",
         },
     ],
+    "smart_home_auth": {
+        "google_sdm_project_id": "",
+        "google_sdm_client_id": "",
+        "google_sdm_client_secret": "",
+        "google_sdm_refresh_token": "",
+        "google_sdm_access_token": "",
+        "ha_url": "",
+        "ha_token": "",
+    },
     "google_home_devices": [
         {
-            "id": "sf-thermostat-upstairs",
-            "name": "Upstairs Nest Thermostat",
-            "room": "Main Living / 2F",
+            "id": "sf-nest-thermostat",
+            "name": "Nest Thermostat",
+            "room": "Hallway / Main",
             "type": "thermostat",
             "hvac_mode": "Heating",
             "temp_f": 69,
             "target_f": 70,
             "downstairs_temp_f": 68,
             "humidity": 46,
-            "state": "Heating • 69°F → 70°F • Downstairs 68°F",
-            "online": True,
-            "active": True,
-        },
-        {
-            "id": "sf-thermostat-downstairs",
-            "name": "Downstairs Zone / Mudroom Sensor",
-            "room": "Ground Floor / 1F",
-            "type": "thermostat",
-            "hvac_mode": "Balanced",
-            "temp_f": 68,
-            "target_f": 68,
-            "humidity": 48,
-            "state": "Balanced • 68°F → 68°F • 48% RH",
+            "state": "Heating • 69°F → 70°F • Downstairs 68°F • 46% RH",
             "online": True,
             "active": True,
         },
         {
             "id": "sf-kitchen-nest-hub",
-            "name": "Kitchen Nest Hub Max",
+            "name": "Kitchen Nest Speaker",
             "room": "Kitchen",
             "type": "speaker",
             "volume_pct": 45,
             "muted": False,
-            "media": "Playing: KQED / Lo-Fi Radio",
-            "state": "Playing: KQED / Lo-Fi Radio • Vol 45%",
+            "media": "KQED / Cast Ready",
+            "state": "KQED / Cast Ready • Vol 45%",
             "online": True,
             "active": True,
         },
         {
             "id": "sf-living-nest-audio",
-            "name": "Living Room & Nursery Nest Audio",
-            "room": "Living / Nursery",
+            "name": "Living Room Nest Speaker",
+            "room": "Living Room",
             "type": "speaker",
             "volume_pct": 30,
             "muted": False,
-            "media": "White Noise / Cast Ready",
-            "state": "White Noise / Cast Ready • Vol 30%",
+            "media": "Cast Ready",
+            "state": "Cast Ready • Vol 30%",
             "online": True,
             "active": True,
         },
@@ -404,6 +400,30 @@ def save_config(cfg: dict[str, Any], target_path: str | Path | None = None) -> P
     return path
 
 
+def merge_discovered_devices(
+    existing_devices: list[dict[str, Any]],
+    discovered_devices: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge live-discovered LAN/SDM devices with existing config devices:
+    - If real speakers (`type == 'speaker'`) were discovered on the LAN, replace any
+      placeholder speakers (those without a matching LAN IP) so only your real speakers appear.
+    - If real thermostats (`type == 'thermostat'`) were discovered via Nest SDM / Matter,
+      replace placeholder thermostats; otherwise keep your Nest Thermostat at the top of the pane.
+    - Keep non-speaker/non-thermostat devices (locks, sensors, etc.) after your thermostats & speakers.
+    """
+    disc_thermostats = [d for d in discovered_devices if d.get("type") == "thermostat"]
+    disc_speakers = [d for d in discovered_devices if d.get("type") == "speaker"]
+
+    existing_thermostats = [d for d in existing_devices if d.get("type") == "thermostat"]
+    existing_speakers = [d for d in existing_devices if d.get("type") == "speaker"]
+    existing_other = [d for d in existing_devices if d.get("type") not in ("thermostat", "speaker")]
+
+    final_thermostats = disc_thermostats if disc_thermostats else existing_thermostats[:1]
+    final_speakers = disc_speakers if disc_speakers else existing_speakers[:2]
+
+    return (final_thermostats + final_speakers + existing_other)[:10]
+
+
 def write_sample_config(
     target_path: str | Path,
     sync_google: bool = True,
@@ -423,14 +443,12 @@ def write_sample_config(
     if scan_lan:
         from daily_dash.discovery import scan_network
 
-        discovered = scan_network(subnet=subnet)
+        discovered = scan_network(subnet=subnet, auth_cfg=cfg.get("smart_home_auth"))
         if discovered.get("google_home_devices"):
-            existing_names = {d["name"] for d in discovered["google_home_devices"]}
-            merged_gh = list(discovered["google_home_devices"])
-            for item in cfg.get("google_home_devices", []):
-                if item["name"] not in existing_names:
-                    merged_gh.append(item)
-            cfg["google_home_devices"] = merged_gh[:10]
+            cfg["google_home_devices"] = merge_discovered_devices(
+                cfg.get("google_home_devices", []),
+                discovered["google_home_devices"],
+            )
 
         if discovered.get("managed_hosts"):
             existing_ips = {h.get("ip") for h in discovered["managed_hosts"]}

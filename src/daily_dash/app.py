@@ -10,7 +10,7 @@ from textual.binding import Binding
 from textual.containers import Grid
 from textual.widgets import Footer, Header
 
-from daily_dash.config import load_config, save_config
+from daily_dash.config import load_config, merge_discovered_devices, save_config
 from daily_dash.discovery import scan_network
 from daily_dash.google_sync import sync_config_with_google
 from daily_dash.providers import fetch_weather_async
@@ -107,6 +107,7 @@ class DailyDashApp(App[None]):
         self.set_interval(1.0, self._tick_second)
         if not self.offline:
             self.run_worker(self._refresh_weather(), exclusive=True)
+            self.run_worker(self._worker_refresh_smart_home(), exclusive=False)
 
     def _tick_system(self) -> None:
         for pane in self.query(SystemMonitorPane):
@@ -183,6 +184,7 @@ class DailyDashApp(App[None]):
         await asyncio.to_thread(
             refresh_smart_devices_telemetry,
             self.config.get("google_home_devices", []),
+            self.config.get("smart_home_auth"),
         )
         for pane in self.query(SmartHomePane):
             pane.refresh_view()
@@ -205,17 +207,16 @@ class DailyDashApp(App[None]):
         )
 
     def action_scan_lan(self) -> None:
-        self.notify("Scanning local network (mDNS / ARP / Cast / Matter)...", title="LAN Discovery")
+        self.notify("Scanning local network (mDNS / Cast / Nest Thermostat)...", title="LAN Discovery")
         self.run_worker(self._worker_scan_lan(), exclusive=False)
 
     async def _worker_scan_lan(self) -> None:
-        res = await asyncio.to_thread(scan_network)
+        res = await asyncio.to_thread(scan_network, auth_cfg=self.config.get("smart_home_auth"))
         if res.get("google_home_devices"):
-            existing_names = {d["name"] for d in res["google_home_devices"]}
-            self.config["google_home_devices"] = (
-                list(res["google_home_devices"])
-                + [d for d in self.config.get("google_home_devices", []) if d["name"] not in existing_names]
-            )[:10]
+            self.config["google_home_devices"] = merge_discovered_devices(
+                self.config.get("google_home_devices", []),
+                res["google_home_devices"],
+            )
         if res.get("managed_hosts"):
             existing_ips = {h.get("ip") for h in res["managed_hosts"]}
             self.config["managed_hosts"] = (
