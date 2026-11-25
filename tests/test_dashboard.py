@@ -7,8 +7,10 @@ from pathlib import Path
 import pytest
 
 from daily_dash.app import DailyDashApp
-from daily_dash.cli import build_parser, main
+from daily_dash.cli import main
 from daily_dash.config import load_config, write_sample_config
+from daily_dash.discovery import get_local_ip_and_subnet, parse_arp_neighbors, scan_network
+from daily_dash.google_sync import _format_event_window
 from daily_dash.providers import (
     collect_system_metrics,
     get_fallback_weather,
@@ -27,18 +29,41 @@ from daily_dash.widgets import (
 
 def test_config_roundtrip(tmp_path: Path) -> None:
     sample_file = tmp_path / "config.yaml"
-    write_sample_config(sample_file)
+    write_sample_config(sample_file, sync_google=False, scan_lan=False)
     assert sample_file.exists()
 
     loaded = load_config(sample_file)
-    assert loaded["profile"]["primary_host"] == "MacBook-Pro-M3.local"
+    assert loaded["profile"]["primary_host"] == "Alex-MacBook-Pro.local"
     assert len(loaded["google_home_devices"]) >= 4
     assert len(loaded["tasks"]) >= 3
 
 
+def test_network_discovery_helpers() -> None:
+    local_ip, subnet = get_local_ip_and_subnet()
+    assert "." in local_ip
+    assert "/24" in subnet
+
+    neighbors = parse_arp_neighbors()
+    assert isinstance(neighbors, list)
+
+    scan_res = scan_network(max_hosts=4, timeout=0.05)
+    assert "managed_hosts" in scan_res
+    assert "google_home_devices" in scan_res
+    assert len(scan_res["managed_hosts"]) >= 1
+
+
+def test_google_sync_time_formatter() -> None:
+    label, s_dt, e_dt = _format_event_window(
+        "2026-11-25T15:30:00-08:00",
+        "2026-11-25T16:00:00-08:00",
+    )
+    assert label == "15:30 - 16:00"
+    assert s_dt is not None and e_dt is not None
+
+
 def test_providers_metrics_and_clocks() -> None:
-    metrics = collect_system_metrics("MacBook-Pro-M3.local")
-    assert metrics.hostname == "MacBook-Pro-M3.local"
+    metrics = collect_system_metrics("Alex-MacBook-Pro.local")
+    assert metrics.hostname == "Alex-MacBook-Pro.local"
     assert 0.0 <= metrics.cpu_total_pct <= 100.0
     assert metrics.mem_total_gb > 0
 
@@ -57,7 +82,7 @@ def test_providers_metrics_and_clocks() -> None:
 
 def test_cli_init_config(tmp_path: Path) -> None:
     cfg_path = tmp_path / "custom.yaml"
-    rc = main(["--init-config", "--config", str(cfg_path)])
+    rc = main(["--init-config", "--offline", "--config", str(cfg_path)])
     assert rc == 0
     assert cfg_path.exists()
 
@@ -67,7 +92,6 @@ async def test_tui_panes_and_interactions() -> None:
     cfg = load_config()
     app = DailyDashApp(config=cfg, offline=True)
     async with app.run_test(size=(140, 42)) as pilot:
-        # Verify all 6 panes exist
         sys_pane = app.query_one("#pane-system", SystemMonitorPane)
         home_pane = app.query_one("#pane-home", SmartHomePane)
         weather_pane = app.query_one("#pane-weather", WeatherPane)

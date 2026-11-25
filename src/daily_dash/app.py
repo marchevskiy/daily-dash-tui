@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from textual.app import App, ComposeResult
@@ -9,7 +10,9 @@ from textual.binding import Binding
 from textual.containers import Grid
 from textual.widgets import Footer, Header
 
-from daily_dash.config import load_config
+from daily_dash.config import load_config, save_config
+from daily_dash.discovery import scan_network
+from daily_dash.google_sync import sync_config_with_google
 from daily_dash.providers import fetch_weather_async
 from daily_dash.widgets import (
     CalendarPane,
@@ -25,7 +28,7 @@ class DailyDashApp(App[None]):
     """Multi-pane terminal dashboard for daily life."""
 
     TITLE = "DailyDash TUI"
-    SUB_TITLE = "MacBook & Fleet • Google Home • Tasks & Inbox • Calendar • Weather • Focus & Git"
+    SUB_TITLE = "MacBook & Fleet • SF Smart Home • Tasks & Inbox • Family Calendar • Weather • Focus & Git"
 
     CSS = """
     Screen {
@@ -53,7 +56,9 @@ class DailyDashApp(App[None]):
 
     BINDINGS = [
         Binding("q", "quit", "Quit", show=True),
-        Binding("r", "refresh_all", "Refresh All", show=True),
+        Binding("r", "refresh_all", "Refresh", show=True),
+        Binding("g", "sync_google", "Sync Google", show=True),
+        Binding("s", "scan_lan", "Scan LAN", show=True),
         Binding("z", "toggle_zoom", "Zoom Pane", show=True),
         Binding("1", "focus_pane('pane-system')", "1:System", show=True),
         Binding("2", "focus_pane('pane-home')", "2:Home", show=True),
@@ -146,3 +151,43 @@ class DailyDashApp(App[None]):
         self.query_one(CommunityExtrasPane).tick_second()
         if not self.offline:
             self.run_worker(self._refresh_weather(), exclusive=True)
+
+    def action_sync_google(self) -> None:
+        self.notify("Syncing Google Calendar & Google Docs...", title="Google Workspace")
+        self.run_worker(self._worker_sync_google(), exclusive=False)
+
+    async def _worker_sync_google(self) -> None:
+        await asyncio.to_thread(sync_config_with_google, self.config)
+        await asyncio.to_thread(save_config, self.config)
+        self.query_one(TasksEmailPane).reload_tasks(self.config.get("tasks", []))
+        self.query_one(CalendarPane).reload_events(self.config.get("calendar_events", []))
+        self.notify(
+            f"Loaded {len(self.config.get('calendar_events', []))} events & {len(self.config.get('tasks', []))} tasks",
+            title="Google Sync Complete",
+        )
+
+    def action_scan_lan(self) -> None:
+        self.notify("Scanning local network (mDNS / ARP / Cast / Matter)...", title="LAN Discovery")
+        self.run_worker(self._worker_scan_lan(), exclusive=False)
+
+    async def _worker_scan_lan(self) -> None:
+        res = await asyncio.to_thread(scan_network)
+        if res.get("google_home_devices"):
+            existing_names = {d["name"] for d in res["google_home_devices"]}
+            self.config["google_home_devices"] = (
+                list(res["google_home_devices"])
+                + [d for d in self.config.get("google_home_devices", []) if d["name"] not in existing_names]
+            )[:8]
+        if res.get("managed_hosts"):
+            existing_ips = {h.get("ip") for h in res["managed_hosts"]}
+            self.config["managed_hosts"] = (
+                list(res["managed_hosts"])
+                + [h for h in self.config.get("managed_hosts", []) if h.get("ip") not in existing_ips]
+            )[:6]
+        await asyncio.to_thread(save_config, self.config)
+        self.query_one(SmartHomePane).reload_devices(self.config.get("google_home_devices", []))
+        self.query_one(SystemMonitorPane).refresh_metrics()
+        self.notify(
+            f"Discovered {len(res.get('managed_hosts', []))} hosts & {len(res.get('google_home_devices', []))} smart devices on {res.get('subnet')}",
+            title="LAN Scan Complete",
+        )

@@ -167,8 +167,13 @@ class SmartHomePane(Static, can_focus=True):
 
     def __init__(self, config: dict[str, Any], **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self.border_title = " 🏠 Google Home & Devices [Space: Toggle] "
+        self.border_title = " 🏠 Google Home & Devices [Space: Toggle | s: Scan LAN] "
         self.devices: list[dict[str, Any]] = list(config.get("google_home_devices", []))
+
+    def reload_devices(self, devices: list[dict[str, Any]]) -> None:
+        self.devices = list(devices)
+        self.selected_idx = 0
+        self.update(self._build_renderable())
 
     def on_mount(self) -> None:
         self.update(self._build_renderable())
@@ -358,9 +363,14 @@ class TasksEmailPane(Static, can_focus=True):
 
     def __init__(self, config: dict[str, Any], **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self.border_title = " ✅ Tasks & ✉️ Priority Inbox [Space: Check] "
+        self.border_title = " ✅ Tasks & ✉️ Priority Inbox [Space: Check | g: Google Sync] "
         self.tasks: list[dict[str, Any]] = list(config.get("tasks", []))
         self.emails: list[dict[str, Any]] = list(config.get("emails", []))
+
+    def reload_tasks(self, tasks: list[dict[str, Any]]) -> None:
+        self.tasks = list(tasks)
+        self.selected_idx = 0
+        self.update(self._build_renderable())
 
     def on_mount(self) -> None:
         self.update(self._build_renderable())
@@ -454,8 +464,12 @@ class CalendarPane(Static, can_focus=True):
 
     def __init__(self, config: dict[str, Any], **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self.border_title = " 📅 Daily Calendar & Schedule "
+        self.border_title = " 📅 Daily Calendar & Schedule [g: Google Sync] "
         self.events: list[dict[str, Any]] = list(config.get("calendar_events", []))
+
+    def reload_events(self, events: list[dict[str, Any]]) -> None:
+        self.events = list(events)
+        self.update(self._build_renderable())
 
     def on_mount(self) -> None:
         self.update(self._build_renderable())

@@ -1,15 +1,251 @@
-# Sample DailyDash TUI Configuration
-# Copy or generate via: dailydash --init-config
 profile:
   name: Alex
-  primary_host: MacBook-Pro-M3.local
+  primary_host: Alex-MacBook-Pro.local
   location: San Francisco, CA
   latitude: 37.7749
   longitude: -122.4194
   temperature_unit: fahrenheit
-
+  google_calendars:
+  - mjalexja@gmail.com
+  - amarchev91@gmail.com
+  - marchevskiy@google.com
+  - bsluuk01fgq0b4pnilh7cokh02i1s7o0@import.calendar.google.com
+  - avv0m5q0qdejhoq2f3fpqq6epqoei0k8@import.calendar.google.com
+  tasks_google_doc_id: 1Eq83UhagQoYmPsa1FgzG-nOhEATU6Hld-0CTZIH3BaY
+  home_maint_sheet_id: 1ZmdplUP0z-RmeyIEXsHgqml59pNDNEMz6LgHFWcVpnA
 refresh_intervals:
   system_metrics_sec: 2.0
   weather_sec: 900.0
   calendar_sec: 300.0
   smart_home_sec: 15.0
+google_home_devices:
+- id: sf-thermostat-dual
+  name: Upstairs & Downstairs Nest Thermostat
+  room: Main & Ground
+  type: thermostat
+  state: Heating • 69°F (Downstairs Sensor 68°F)
+  online: true
+  active: true
+  temp_f: 69
+  target_f: 70
+- id: sf-nest-protect
+  name: Nest Protect Smoke/CO & Garage Heat
+  room: All Levels
+  type: air
+  state: All Clear • Garage Rate-of-Rise OK
+  online: true
+  active: true
+- id: sf-front-deadbolt
+  name: Front Tunnel & Yard Smart Deadbolts
+  room: Entry & Patio
+  type: lock
+  state: Locked • Battery 94% (PTFE Lubed)
+  online: true
+  active: true
+- id: sf-garage-opener
+  name: Wi-Fi Garage Door Opener & Lintel Cam
+  room: Garage
+  type: lock
+  state: Closed • Floodlight Cam Active
+  online: true
+  active: true
+- id: sf-leak-sensors
+  name: Wi-Fi Water Leak Sensors (5x Zones)
+  room: Mudroom/Utility
+  type: air
+  state: Dry • 48% Ground Floor Humidity
+  online: true
+  active: true
+- id: sf-warm-leds
+  name: 2700K Warm White LEDs & Lutron Shades
+  room: Living / Office
+  type: light
+  state: On • 85% Warm White (90+ CRI)
+  online: true
+  active: true
+  brightness: 85
+managed_hosts:
+- hostname: Alex-MacBook-Pro.local
+  role: Primary Workstation (SF / SVL / WFH)
+  ip: 192.168.86.24
+  cpu_model: Apple Silicon M-Series
+  battery_pct: 92
+  power_plugged: true
+- hostname: nest-wifi-pro-gateway.local
+  role: SF Rowhouse Mesh Router & Matter Hub
+  ip: 192.168.86.1
+  cpu_pct: 11.4
+  mem_pct: 42.0
+  disk_pct: 18.0
+  online: true
+- hostname: poe-nvr-cameras.local
+  role: 3-Cam SF Rowhouse Security (Tunnel/Garage/Yard)
+  ip: 192.168.86.15
+  cpu_pct: 18.5
+  mem_pct: 51.2
+  disk_pct: 64.0
+  online: true
+tasks:
+- id: gdoc-g-1
+  title: 'Grocery: Milk, eggs, butter'
+  priority: P2
+  project: Shopping
+  due: Weekly
+  done: false
+- id: gdoc-g-2
+  title: 'Grocery: Fresh fruit & veggies (bananas, berries, greens)'
+  priority: P2
+  project: Shopping
+  due: Weekly
+  done: false
+- id: gdoc-g-3
+  title: 'Grocery: Frozen easy meal backup (pizza / ravioli / orange chicken)'
+  priority: P2
+  project: Shopping
+  due: Weekly
+  done: false
+- id: gdoc-g-4
+  title: 'Grocery: Leo supplies (formula, diapers, wipes)'
+  priority: P2
+  project: Shopping
+  due: Weekly
+  done: false
+- id: gdoc-g-5
+  title: 'Grocery: Pet supplies (Kosmo food, topper, Greenies, Carprofen; June food
+    & litter)'
+  priority: P2
+  project: Shopping
+  due: Weekly
+  done: false
+- id: gdoc-t-6
+  title: Check roof drain scuppers & patio drains (November seasonal maintenance)
+  priority: P2
+  project: Home
+  due: This Week
+  done: false
+- id: gdoc-t-7
+  title: Check/replace furnace filter (November seasonal maintenance)
+  priority: P2
+  project: Home
+  due: This Week
+  done: false
+- id: gdoc-t-8
+  title: Lubricate garage door springs & rollers
+  priority: P2
+  project: Home
+  due: This Week
+  done: false
+emails:
+- sender: Apps Script Monitor
+  subject: '[HEALTHY] Weekly Family Planner & Eddie''s List Sync deployed (V8)'
+  time: 08:18 PST
+  unread: true
+  tag: Automation
+- sender: Villa de Kapuso YMCA
+  subject: 'Reminder: Daycare Full Closure Thu Nov 26 – Fri Nov 27 (Thanksgiving)'
+  time: Today
+  unread: true
+  tag: Family
+- sender: SF Botanical Garden
+  subject: 'Tickets Ready: Lightscape at Gardens of Golden Gate Park (5:00 PM)'
+  time: Today
+  unread: true
+  tag: Events
+- sender: Reddit Digest Script
+  subject: Daily Automated Digest delivered from Apps Script (1Kf1xh...)
+  time: 07:00 PST
+  unread: false
+  tag: Digest
+calendar_events:
+- time: All Day
+  title: Your BenchApp calendar link changed
+  location: SF / Home
+  status: up_next
+  calendar: Hockey
+- time: All Day
+  title: Your BenchApp calendar link changed
+  location: SF / Home
+  status: upcoming
+  calendar: Hockey
+- time: 00:00 - 00:00
+  title: (Busy)
+  location: SF / Home
+  status: upcoming
+  calendar: Work
+- time: 07:00 - 07:30
+  title: '[Alex] Wake up with Leo'
+  location: SF / Home
+  status: completed
+  calendar: Family
+- time: 08:00 - 08:30
+  title: '[MJ] Morning Kosmo Walk (after 7a call)'
+  location: SF / Home
+  status: completed
+  calendar: Family
+- time: 08:30 - 08:50
+  title: '[MJ] Leo Daycare Drop-off (Villa de Kapuso YMCA)'
+  location: Villa de Kapuso
+  status: completed
+  calendar: Family
+- time: 09:00 - 13:00
+  title: Daly City Farmers Market at Serramonte (Special Pre-Thanksgiving Market)
+  location: Serramonte Center
+  status: upcoming
+  calendar: Family
+- time: 15:30 - 16:00
+  title: '[MJ] Afternoon Kosmo Walk (before dark)'
+  location: SF / Home
+  status: upcoming
+  calendar: Family
+- time: 16:30 - 16:50
+  title: '[MJ] Leo Daycare Pick-up (<8h)'
+  location: Villa de Kapuso
+  status: upcoming
+  calendar: Family
+- time: 17:00 - 18:30
+  title: Lightscape at Gardens of Golden Gate Park
+  location: San Francisco Botanical Garden
+  status: upcoming
+  calendar: Family
+- time: 17:15 - 18:00
+  title: '[MJ] Dinner (Takeout Night)'
+  location: SF / Home
+  status: upcoming
+  calendar: Family
+- time: 18:00 - 18:25
+  title: '[Alex] Leo Bath Time'
+  location: SF / Home
+  status: upcoming
+  calendar: Family
+- time: 18:00 - 20:00
+  title: (Busy)
+  location: SF / Home
+  status: upcoming
+  calendar: Work
+- time: 19:00 - 20:00
+  title: '[MJ] Leo Bed Time'
+  location: SF / Home
+  status: upcoming
+  calendar: Family
+habits:
+- name: Walk Kosmo before 4:54 PM SF Sunset
+  streak: 18
+  done_today: true
+- name: Leo Daycare Pick-up under 8hr window
+  streak: 14
+  done_today: true
+- name: Ground Floor Humidity 40-55% & Scupper Check
+  streak: 9
+  done_today: false
+- name: Leave Front-Load Washer Door Ajar
+  streak: 27
+  done_today: true
+world_clocks:
+- label: SF / Sunnyvale
+  tz: America/Los_Angeles
+- label: Chicago (Bulls/Hawks)
+  tz: America/Chicago
+- label: New York / EST
+  tz: America/New_York
+- label: London (Arsenal FC)
+  tz: Europe/London
