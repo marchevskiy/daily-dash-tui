@@ -136,17 +136,12 @@ def _run_interactive_wizard(console: Console, config: dict[str, Any], target_pat
     if Confirm.ask("Scan your local network (LAN / mDNS / Google Cast / Matter) for devices now?", default=True):
         res = scan_network(auth_cfg=config.get("smart_home_auth"))
         _print_scan_results(console, res)
-        if res.get("google_home_devices"):
-            config["google_home_devices"] = merge_discovered_devices(
-                config.get("google_home_devices", []),
-                res["google_home_devices"],
-            )
+        config["google_home_devices"] = merge_discovered_devices(
+            config.get("google_home_devices", []),
+            res.get("google_home_devices", []),
+        )
         if res.get("managed_hosts"):
-            existing_ips = {h.get("ip") for h in res["managed_hosts"]}
-            merged_h = list(res["managed_hosts"]) + [
-                h for h in config.get("managed_hosts", []) if h.get("ip") not in existing_ips
-            ]
-            config["managed_hosts"] = merged_h[:6]
+            config["managed_hosts"] = list(res["managed_hosts"])[:6]
 
     if Confirm.ask("Sync live events & tasks from connected Google Calendar & Google Docs now?", default=True):
         sync_config_with_google(config)
@@ -197,17 +192,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.scan_network:
         res = scan_network(subnet=args.subnet, auth_cfg=config.get("smart_home_auth"))
         _print_scan_results(console, res)
-        if res.get("google_home_devices"):
-            config["google_home_devices"] = merge_discovered_devices(
-                config.get("google_home_devices", []),
-                res["google_home_devices"],
-            )
+        config["google_home_devices"] = merge_discovered_devices(
+            config.get("google_home_devices", []),
+            res.get("google_home_devices", []),
+        )
         if res.get("managed_hosts"):
-            existing_ips = {h.get("ip") for h in res["managed_hosts"]}
-            config["managed_hosts"] = (
-                list(res["managed_hosts"])
-                + [h for h in config.get("managed_hosts", []) if h.get("ip") not in existing_ips]
-            )[:6]
+            config["managed_hosts"] = list(res["managed_hosts"])[:6]
         saved = save_config(config, target_path)
         console.print(f"[bold green]✓ Updated config with discovered LAN devices at:[/bold green] {saved}")
         if not args.sync_google and not args.export_svg:

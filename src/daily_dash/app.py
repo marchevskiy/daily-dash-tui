@@ -212,17 +212,12 @@ class DailyDashApp(App[None]):
 
     async def _worker_scan_lan(self) -> None:
         res = await asyncio.to_thread(scan_network, auth_cfg=self.config.get("smart_home_auth"))
-        if res.get("google_home_devices"):
-            self.config["google_home_devices"] = merge_discovered_devices(
-                self.config.get("google_home_devices", []),
-                res["google_home_devices"],
-            )
+        self.config["google_home_devices"] = merge_discovered_devices(
+            self.config.get("google_home_devices", []),
+            res.get("google_home_devices", []),
+        )
         if res.get("managed_hosts"):
-            existing_ips = {h.get("ip") for h in res["managed_hosts"]}
-            self.config["managed_hosts"] = (
-                list(res["managed_hosts"])
-                + [h for h in self.config.get("managed_hosts", []) if h.get("ip") not in existing_ips]
-            )[:8]
+            self.config["managed_hosts"] = list(res["managed_hosts"])[:8]
         await asyncio.to_thread(save_config, self.config)
         self.query_one(SmartHomePane).reload_devices(self.config.get("google_home_devices", []))
         self.query_one(SystemMonitorPane).refresh_metrics()

@@ -37,7 +37,9 @@ def test_config_roundtrip(tmp_path: Path) -> None:
     assert loaded["profile"]["primary_host"] == "Alex-MacBook-Pro.local"
     assert loaded["profile"]["tide_station_id"] == "9414290"
     assert len(loaded["automations"]) == 4
-    assert len(loaded["google_home_devices"]) >= 4
+    # Only the single Nest Thermostat is in default config before LAN scan (no fake smoke detectors/locks)
+    assert len(loaded["google_home_devices"]) == 1
+    assert loaded["google_home_devices"][0]["name"] == "Nest Thermostat"
     assert len(loaded["tasks"]) >= 3
 
 
@@ -56,13 +58,13 @@ def test_network_discovery_helpers() -> None:
     assert "google_home_devices" in scan_res
     assert len(scan_res["managed_hosts"]) >= 1
 
-    # Verify that discovering 2 physical LAN speakers replaces the 2 placeholder speakers
-    # (so we get exactly 2 speakers, not 4+ speakers) while keeping the Nest Thermostat at index 0
+    # Verify that discovering 2 physical LAN speakers yields ONLY the Nest Thermostat + 2 real speakers
     two_real_speakers = [
         {"id": "cast-1", "name": "Office Speaker", "room": "Office", "type": "speaker", "volume_pct": 50},
         {"id": "cast-2", "name": "Bedroom Speaker", "room": "Bedroom", "type": "speaker", "volume_pct": 35},
     ]
     merged = merge_discovered_devices(DEFAULT_CONFIG["google_home_devices"], two_real_speakers)
+    assert len(merged) == 3
     assert merged[0]["type"] == "thermostat"
     assert merged[0]["name"] == "Nest Thermostat"
     speakers_in_merged = [d for d in merged if d["type"] == "speaker"]
@@ -117,6 +119,20 @@ async def test_tui_panes_and_dynamic_zoom() -> None:
     from daily_dash.config import DEFAULT_CONFIG
 
     cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["google_home_devices"].append(
+        {
+            "id": "cast-test-1",
+            "name": "Living Room Speaker",
+            "room": "Living Room",
+            "type": "speaker",
+            "volume_pct": 40,
+            "muted": False,
+            "media": "Idle",
+            "state": "Idle • Vol 40%",
+            "online": True,
+            "active": True,
+        }
+    )
     app = DailyDashApp(config=cfg, offline=True)
     async with app.run_test(size=(150, 44)) as pilot:
         sys_pane = app.query_one("#pane-system", SystemMonitorPane)

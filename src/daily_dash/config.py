@@ -89,106 +89,27 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "google_home_devices": [
         {
-            "id": "sf-nest-thermostat",
+            "id": "nest-thermostat",
             "name": "Nest Thermostat",
-            "room": "Hallway / Main",
+            "room": "Home",
             "type": "thermostat",
             "hvac_mode": "Heating",
             "temp_f": 69,
             "target_f": 70,
-            "downstairs_temp_f": 68,
             "humidity": 46,
-            "state": "Heating • 69°F → 70°F • Downstairs 68°F • 46% RH",
-            "online": True,
-            "active": True,
-        },
-        {
-            "id": "sf-kitchen-nest-hub",
-            "name": "Kitchen Nest Speaker",
-            "room": "Kitchen",
-            "type": "speaker",
-            "volume_pct": 45,
-            "muted": False,
-            "media": "KQED / Cast Ready",
-            "state": "KQED / Cast Ready • Vol 45%",
-            "online": True,
-            "active": True,
-        },
-        {
-            "id": "sf-living-nest-audio",
-            "name": "Living Room Nest Speaker",
-            "room": "Living Room",
-            "type": "speaker",
-            "volume_pct": 30,
-            "muted": False,
-            "media": "Cast Ready",
-            "state": "Cast Ready • Vol 30%",
-            "online": True,
-            "active": True,
-        },
-        {
-            "id": "sf-nest-protect",
-            "name": "Nest Protect Smoke/CO & Garage Heat",
-            "room": "All Levels",
-            "type": "air",
-            "state": "All Clear • Garage Rate-of-Rise OK",
-            "online": True,
-            "active": True,
-        },
-        {
-            "id": "sf-front-deadbolt",
-            "name": "Front Tunnel & Yard Smart Deadbolts",
-            "room": "Entry & Patio",
-            "type": "lock",
-            "state": "Locked • Battery 94% (PTFE Lubed)",
-            "online": True,
-            "active": True,
-        },
-        {
-            "id": "sf-garage-opener",
-            "name": "Wi-Fi Garage Door Opener & Lintel Cam",
-            "room": "Garage",
-            "type": "lock",
-            "state": "Closed • Floodlight Cam Active",
-            "online": True,
-            "active": True,
-        },
-        {
-            "id": "sf-leak-sensors",
-            "name": "Wi-Fi Water Leak Sensors (5x Zones)",
-            "room": "Mudroom/Utility",
-            "type": "air",
-            "state": "Dry • 48% Ground Floor Humidity",
+            "state": "Heating • 69°F → 70°F • 46% RH (Set GOOGLE_SDM_* for live cloud poll)",
             "online": True,
             "active": True,
         },
     ],
     "managed_hosts": [
         {
-            "hostname": "Alex-MacBook-Pro.local",
-            "role": "Primary Workstation (SF / SVL / WFH)",
-            "ip": "192.168.86.24",
-            "cpu_model": "Apple Silicon M-Series",
-            "battery_pct": 92,
+            "hostname": "MacBook-Pro.local",
+            "role": "Primary Workstation (Local)",
+            "ip": "127.0.0.1",
+            "cpu_model": "Apple Silicon / Intel",
+            "battery_pct": 100,
             "power_plugged": True,
-        },
-        {
-            "hostname": "nest-wifi-pro-gateway.local",
-            "role": "SF Rowhouse Mesh Router & Matter Hub",
-            "ip": "192.168.86.1",
-            "cpu_pct": 11.4,
-            "mem_pct": 42.0,
-            "disk_pct": 18.0,
-            "online": True,
-        },
-        {
-            "hostname": "poe-nvr-cameras.local",
-            "role": "3-Cam SF Rowhouse Security (Tunnel/Garage/Yard)",
-            "ip": "192.168.86.15",
-            "cpu_pct": 18.5,
-            "mem_pct": 51.2,
-            "disk_pct": 64.0,
-            "online": True,
         },
     ],
     "tasks": [
@@ -404,24 +325,18 @@ def merge_discovered_devices(
     existing_devices: list[dict[str, Any]],
     discovered_devices: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Merge live-discovered LAN/SDM devices with existing config devices:
-    - If real speakers (`type == 'speaker'`) were discovered on the LAN, replace any
-      placeholder speakers (those without a matching LAN IP) so only your real speakers appear.
-    - If real thermostats (`type == 'thermostat'`) were discovered via Nest SDM / Matter,
-      replace placeholder thermostats; otherwise keep your Nest Thermostat at the top of the pane.
-    - Keep non-speaker/non-thermostat devices (locks, sensors, etc.) after your thermostats & speakers.
+    """Keep ONLY real discovered LAN/SDM devices (your actual speakers and Nest Thermostat).
+    If no cloud SDM token is configured yet for the Nest Thermostat, preserve your single
+    Nest Thermostat entry at Row #1 alongside your real discovered Cast speakers.
     """
     disc_thermostats = [d for d in discovered_devices if d.get("type") == "thermostat"]
     disc_speakers = [d for d in discovered_devices if d.get("type") == "speaker"]
+    disc_other = [d for d in discovered_devices if d.get("type") not in ("thermostat", "speaker")]
 
     existing_thermostats = [d for d in existing_devices if d.get("type") == "thermostat"]
-    existing_speakers = [d for d in existing_devices if d.get("type") == "speaker"]
-    existing_other = [d for d in existing_devices if d.get("type") not in ("thermostat", "speaker")]
-
     final_thermostats = disc_thermostats if disc_thermostats else existing_thermostats[:1]
-    final_speakers = disc_speakers if disc_speakers else existing_speakers[:2]
 
-    return (final_thermostats + final_speakers + existing_other)[:10]
+    return (final_thermostats + disc_speakers + disc_other)[:10]
 
 
 def write_sample_config(
@@ -444,18 +359,11 @@ def write_sample_config(
         from daily_dash.discovery import scan_network
 
         discovered = scan_network(subnet=subnet, auth_cfg=cfg.get("smart_home_auth"))
-        if discovered.get("google_home_devices"):
-            cfg["google_home_devices"] = merge_discovered_devices(
-                cfg.get("google_home_devices", []),
-                discovered["google_home_devices"],
-            )
-
+        cfg["google_home_devices"] = merge_discovered_devices(
+            cfg.get("google_home_devices", []),
+            discovered.get("google_home_devices", []),
+        )
         if discovered.get("managed_hosts"):
-            existing_ips = {h.get("ip") for h in discovered["managed_hosts"]}
-            merged_hosts = list(discovered["managed_hosts"])
-            for h in cfg.get("managed_hosts", []):
-                if h.get("ip") not in existing_ips:
-                    merged_hosts.append(h)
-            cfg["managed_hosts"] = merged_hosts[:8]
+            cfg["managed_hosts"] = list(discovered["managed_hosts"])[:8]
 
     return save_config(cfg, target_path)
