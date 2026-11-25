@@ -17,6 +17,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "latitude": 37.7749,
         "longitude": -122.4194,
         "temperature_unit": "fahrenheit",
+        "tide_station_id": "9414290",
+        "tide_station_name": "San Francisco (Golden Gate / Ocean Beach)",
         "google_calendars": [
             "mjalexja@gmail.com",
             "amarchev91@gmail.com",
@@ -25,6 +27,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "avv0m5q0qdejhoq2f3fpqq6epqoei0k8@import.calendar.google.com",
         ],
         "tasks_google_doc_id": "1Eq83UhagQoYmPsa1FgzG-nOhEATU6Hld-0CTZIH3BaY",
+        "automations_google_doc_id": "1K35_qv3yVfncwUodoX-FFTxcB01fscgHzE_cm6MFMFs",
         "home_maint_sheet_id": "1ZmdplUP0z-RmeyIEXsHgqml59pNDNEMz6LgHFWcVpnA",
     },
     "refresh_intervals": {
@@ -33,6 +36,48 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "calendar_sec": 300.0,
         "smart_home_sec": 15.0,
     },
+    "automations": [
+        {
+            "name": "Weekly Family & Schedule Planner",
+            "script_id": "1muxR2N_g2W1Zj…",
+            "status": "HEALTHY",
+            "runtime": "V8",
+            "timezone": "America/Los_Angeles",
+            "last_checked": "2026-11-25 08:18 PST",
+            "last_updated": "2026-11-22",
+            "details": "Verified: Weekly Family Plan Draft (Nov 23 - Nov 27, 2026)",
+        },
+        {
+            "name": "Eddie's List Monthly Calendar Sync",
+            "script_id": "1tZofJdyt24HY_…",
+            "status": "HEALTHY",
+            "runtime": "V8",
+            "timezone": "America/Los_Angeles",
+            "last_checked": "2026-11-25 08:18 PST",
+            "last_updated": "2026-11-21",
+            "details": "Synced monthly SF comedy/events to Eddie's List calendar",
+        },
+        {
+            "name": "Reddit Digest",
+            "script_id": "1Kf1xhVXqjSdJ8…",
+            "status": "HEALTHY",
+            "runtime": "V8",
+            "timezone": "America/Los_Angeles",
+            "last_checked": "2026-11-25 08:18 PST",
+            "last_updated": "2026-11-20",
+            "details": "Daily digest email active (1 deployment)",
+        },
+        {
+            "name": "Archive Labeled Emails",
+            "script_id": "1nwtJEvVM4o_CG…",
+            "status": "HEALTHY",
+            "runtime": "V8",
+            "timezone": "America/Mexico_City",
+            "last_checked": "2026-11-25 08:18 PST",
+            "last_updated": "2021-09-17",
+            "details": "Auto-archive filter deployment active",
+        },
+    ],
     "google_home_devices": [
         {
             "id": "sf-thermostat-dual",
@@ -90,6 +135,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "online": True,
             "active": True,
             "brightness": 85,
+        },
+        {
+            "id": "sf-cameras-poe",
+            "name": "3-Cam SF Rowhouse Exterior Security",
+            "room": "Tunnel/Garage/Yard",
+            "type": "lock",
+            "state": "Recording • IP67 PoE Lenses Clear",
+            "online": True,
+            "active": True,
         },
     ],
     "managed_hosts": [
@@ -169,11 +223,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "due": "Nov-Dec",
             "done": False,
         },
+        {
+            "id": "t-7",
+            "title": "Camera-scope cast-iron/clay sewer lateral to street trap",
+            "priority": "P3",
+            "project": "Q4 CapEx",
+            "due": "Nov-Jan",
+            "done": False,
+        },
     ],
     "emails": [
         {
             "sender": "Apps Script Monitor",
-            "subject": "[HEALTHY] Weekly Family Planner & Eddie's List Sync deployed (V8)",
+            "subject": "[HEALTHY] All 4 scripts (Family Planner, Eddie's List, Reddit, Archive) V8 OK",
             "time": "08:18 PST",
             "unread": True,
             "tag": "Automation",
@@ -251,8 +313,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "calendar": "Family",
         },
         {
+            "time": "17:15 - 18:00",
+            "title": "[MJ] Dinner (Takeout / Sheet-Pan Chicken)",
+            "location": "Home",
+            "status": "upcoming",
+            "calendar": "Family",
+        },
+        {
             "time": "18:00 - 18:25",
-            "title": "[Alex] Leo Bath Time & [MJ] Bed Time (19:00)",
+            "title": "[Alex] Leo Bath Time",
+            "location": "Home",
+            "status": "upcoming",
+            "calendar": "Family",
+        },
+        {
+            "time": "19:00 - 20:00",
+            "title": "[MJ] Leo Bed Time",
             "location": "Home",
             "status": "upcoming",
             "calendar": "Family",
@@ -328,13 +404,12 @@ def write_sample_config(
 
         discovered = scan_network(subnet=subnet)
         if discovered.get("google_home_devices"):
-            # Prepend live-discovered LAN devices ahead of configured home devices
             existing_names = {d["name"] for d in discovered["google_home_devices"]}
             merged_gh = list(discovered["google_home_devices"])
             for item in cfg.get("google_home_devices", []):
                 if item["name"] not in existing_names:
                     merged_gh.append(item)
-            cfg["google_home_devices"] = merged_gh[:8]
+            cfg["google_home_devices"] = merged_gh[:10]
 
         if discovered.get("managed_hosts"):
             existing_ips = {h.get("ip") for h in discovered["managed_hosts"]}
@@ -342,6 +417,6 @@ def write_sample_config(
             for h in cfg.get("managed_hosts", []):
                 if h.get("ip") not in existing_ips:
                     merged_hosts.append(h)
-            cfg["managed_hosts"] = merged_hosts[:6]
+            cfg["managed_hosts"] = merged_hosts[:8]
 
     return save_config(cfg, target_path)

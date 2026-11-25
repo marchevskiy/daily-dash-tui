@@ -1,4 +1,4 @@
-"""Live Google Workspace (Google Calendar & Google Docs) synchronization for DailyDash TUI."""
+"""Live Google Workspace (Google Calendar, Google Docs Tasks, & Apps Script Status Log) synchronization for DailyDash TUI."""
 
 from __future__ import annotations
 
@@ -108,12 +108,11 @@ def fetch_google_calendar_events(
         except Exception:
             continue
 
-    # Sort chronologically (all-day first, then by start time)
     epoch_min = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
     raw_items.sort(key=lambda pair: pair[0] or epoch_min)
 
     results: list[dict[str, Any]] = []
-    for s_dt, item in raw_items:
+    for _, item in raw_items:
         if item["status"] == "upcoming" and not up_next_assigned:
             item["status"] = "up_next"
             up_next_assigned = True
@@ -150,7 +149,6 @@ def fetch_google_docs_tasks(doc_id: str = SHARED_SHOPPING_TASKS_DOC_ID) -> list[
                 continue
 
             item_text = line[2:].strip()
-            # Skip sub-category headers like "**Cooked Meals**:"
             if item_text.endswith(":"):
                 continue
             item_text = re.sub(r"\*\*(.*?)\*\*", r"\1", item_text)
@@ -178,13 +176,79 @@ def fetch_google_docs_tasks(doc_id: str = SHARED_SHOPPING_TASKS_DOC_ID) -> list[
                     }
                 )
 
-        return tasks[:10]
+        return tasks[:12]
+    except Exception:
+        return []
+
+
+def fetch_apps_script_automations(doc_id: str = APPS_SCRIPT_STATUS_DOC_ID) -> list[dict[str, Any]]:
+    """Fetch and parse daily Google Apps Script automation statuses from the Status Log Google Doc."""
+    if not shutil.which("gdocs"):
+        return []
+
+    try:
+        proc = subprocess.run(
+            ["gdocs", "readonly", "read", doc_id, "--comments=false"],
+            capture_output=True,
+            text=True,
+            timeout=6.0,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return []
+
+        raw = proc.stdout.replace("\\-", "-").replace("\\[", "[").replace("\\]", "]").replace("\\_", "_")
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+
+        # Locate the last "[YYYY-MM-DD ...]" run block
+        last_block_idx = 0
+        last_check_ts = "Today"
+        for idx, ln in enumerate(lines):
+            if ln.startswith("[202") and "]" in ln:
+                last_block_idx = idx
+                last_check_ts = ln.strip("[]").split("—")[0].strip()
+
+        automations: list[dict[str, Any]] = []
+        current_item: dict[str, Any] | None = None
+
+        for ln in lines[last_block_idx + 1 :]:
+            if ln.startswith("- ") and "(" in ln and ")" in ln:
+                name_part = ln[2:].split("(")[0].strip()
+                script_id = ln.split("(")[-1].split(")")[0].strip()
+                if "Execution Processes API" in name_part:
+                    continue
+                current_item = {
+                    "name": name_part,
+                    "script_id": script_id[:14] + "…",
+                    "status": "HEALTHY",
+                    "runtime": "V8",
+                    "timezone": "America/Los_Angeles",
+                    "last_checked": last_check_ts,
+                    "details": "",
+                }
+                automations.append(current_item)
+            elif current_item is not None and ln.startswith("Status:"):
+                parts = [p.strip() for p in ln.split("|")]
+                for p in parts:
+                    if p.startswith("Status:"):
+                        current_item["status"] = p.replace("Status:", "").strip()
+                    elif p.startswith("Runtime:"):
+                        current_item["runtime"] = p.replace("Runtime:", "").strip()
+                    elif p.startswith("Timezone:"):
+                        current_item["timezone"] = p.replace("Timezone:", "").strip()
+                    elif p.startswith("Last Updated:"):
+                        current_item["last_updated"] = p.replace("Last Updated:", "").strip()[:10]
+            elif current_item is not None and ln.startswith("Recent Output Verified:"):
+                current_item["details"] = ln.replace("Recent Output Verified:", "").strip()
+
+        return automations
     except Exception:
         return []
 
 
 def sync_config_with_google(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Update a config dictionary in-place with live Google Calendar events and Google Docs tasks."""
+    """Update a config dictionary in-place with live Google Calendar events, Google Docs tasks,
+    and daily Apps Script automation health statuses.
+    """
     events = fetch_google_calendar_events()
     if events:
         cfg["calendar_events"] = events
@@ -192,5 +256,9 @@ def sync_config_with_google(cfg: dict[str, Any]) -> dict[str, Any]:
     tasks = fetch_google_docs_tasks()
     if tasks:
         cfg["tasks"] = tasks
+
+    automations = fetch_apps_script_automations()
+    if automations:
+        cfg["automations"] = automations
 
     return cfg

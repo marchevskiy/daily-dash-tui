@@ -17,6 +17,7 @@ from daily_dash.providers import fetch_weather_async
 from daily_dash.widgets import (
     CalendarPane,
     CommunityExtrasPane,
+    ResponsivePane,
     SmartHomePane,
     SystemMonitorPane,
     TasksEmailPane,
@@ -28,7 +29,7 @@ class DailyDashApp(App[None]):
     """Multi-pane terminal dashboard for daily life."""
 
     TITLE = "DailyDash TUI"
-    SUB_TITLE = "MacBook & Fleet • SF Smart Home • Tasks & Inbox • Family Calendar • Weather • Focus & Git"
+    SUB_TITLE = "MacBook & Fleet • SF Smart Home • Weather & Tides • Tasks & Inbox • Family Calendar • Automations"
 
     CSS = """
     Screen {
@@ -38,15 +39,23 @@ class DailyDashApp(App[None]):
 
     #dashboard-grid {
         grid-size: 3 2;
+        grid-columns: 1fr 1fr 1fr;
+        grid-rows: 1fr 1fr;
         grid-gutter: 1 1;
         padding: 0 1;
         width: 100%;
         height: 1fr;
     }
 
+    #dashboard-grid.zoomed {
+        grid-size: 1 1;
+        grid-columns: 1fr;
+        grid-rows: 1fr;
+    }
+
     .maximized {
-        column-span: 3;
-        row-span: 2;
+        width: 100%;
+        height: 100%;
     }
 
     .hidden-pane {
@@ -62,10 +71,10 @@ class DailyDashApp(App[None]):
         Binding("z", "toggle_zoom", "Zoom Pane", show=True),
         Binding("1", "focus_pane('pane-system')", "1:System", show=True),
         Binding("2", "focus_pane('pane-home')", "2:Home", show=True),
-        Binding("3", "focus_pane('pane-weather')", "3:Weather", show=True),
+        Binding("3", "focus_pane('pane-weather')", "3:Weather/Tides", show=True),
         Binding("4", "focus_pane('pane-tasks')", "4:Tasks/Mail", show=True),
         Binding("5", "focus_pane('pane-calendar')", "5:Calendar", show=True),
-        Binding("6", "focus_pane('pane-extras')", "6:Focus/Git", show=True),
+        Binding("6", "focus_pane('pane-extras')", "6:Automations", show=True),
     ]
 
     def __init__(
@@ -100,10 +109,12 @@ class DailyDashApp(App[None]):
             self.run_worker(self._refresh_weather(), exclusive=True)
 
     def _tick_system(self) -> None:
-        self.query_one(SystemMonitorPane).refresh_metrics()
+        for pane in self.query(SystemMonitorPane):
+            pane.refresh_metrics()
 
     def _tick_second(self) -> None:
-        self.query_one(CommunityExtrasPane).tick_second()
+        for pane in self.query(CommunityExtrasPane):
+            pane.tick_second()
 
     async def _refresh_weather(self) -> None:
         prof = self.config.get("profile", {})
@@ -112,8 +123,13 @@ class DailyDashApp(App[None]):
             latitude=float(prof.get("latitude", 37.7749)),
             longitude=float(prof.get("longitude", -122.4194)),
             unit=prof.get("temperature_unit", "fahrenheit"),
+            tide_station_id=str(prof.get("tide_station_id", "9414290")),
+            tide_station_name=str(
+                prof.get("tide_station_name", "San Francisco (Golden Gate / Ocean Beach)")
+            ),
         )
-        self.query_one(WeatherPane).update_weather(report)
+        for pane in self.query(WeatherPane):
+            pane.update_weather(report)
 
     def action_focus_pane(self, pane_id: str) -> None:
         if self._zoomed_pane_id and self._zoomed_pane_id != pane_id:
@@ -132,19 +148,27 @@ class DailyDashApp(App[None]):
 
     def _zoom_pane(self, pane_id: str) -> None:
         self._zoomed_pane_id = pane_id
+        grid = self.query_one("#dashboard-grid", Grid)
+        grid.add_class("zoomed")
         for pane in self.query("#dashboard-grid > *"):
             if pane.id == pane_id:
                 pane.remove_class("hidden-pane")
                 pane.add_class("maximized")
+                if isinstance(pane, ResponsivePane):
+                    pane.refresh_view()
             else:
                 pane.remove_class("maximized")
                 pane.add_class("hidden-pane")
 
     def _unzoom_all(self) -> None:
         self._zoomed_pane_id = None
+        grid = self.query_one("#dashboard-grid", Grid)
+        grid.remove_class("zoomed")
         for pane in self.query("#dashboard-grid > *"):
             pane.remove_class("maximized")
             pane.remove_class("hidden-pane")
+            if isinstance(pane, ResponsivePane):
+                pane.refresh_view()
 
     def action_refresh_all(self) -> None:
         self.query_one(SystemMonitorPane).refresh_metrics()
@@ -153,7 +177,7 @@ class DailyDashApp(App[None]):
             self.run_worker(self._refresh_weather(), exclusive=True)
 
     def action_sync_google(self) -> None:
-        self.notify("Syncing Google Calendar & Google Docs...", title="Google Workspace")
+        self.notify("Syncing Google Calendar, Tasks & Apps Script Automations...", title="Google Workspace")
         self.run_worker(self._worker_sync_google(), exclusive=False)
 
     async def _worker_sync_google(self) -> None:
@@ -161,8 +185,11 @@ class DailyDashApp(App[None]):
         await asyncio.to_thread(save_config, self.config)
         self.query_one(TasksEmailPane).reload_tasks(self.config.get("tasks", []))
         self.query_one(CalendarPane).reload_events(self.config.get("calendar_events", []))
+        self.query_one(CommunityExtrasPane).reload_automations(self.config.get("automations", []))
         self.notify(
-            f"Loaded {len(self.config.get('calendar_events', []))} events & {len(self.config.get('tasks', []))} tasks",
+            f"Synced {len(self.config.get('calendar_events', []))} events, "
+            f"{len(self.config.get('tasks', []))} tasks & "
+            f"{len(self.config.get('automations', []))} automations",
             title="Google Sync Complete",
         )
 
@@ -177,13 +204,13 @@ class DailyDashApp(App[None]):
             self.config["google_home_devices"] = (
                 list(res["google_home_devices"])
                 + [d for d in self.config.get("google_home_devices", []) if d["name"] not in existing_names]
-            )[:8]
+            )[:10]
         if res.get("managed_hosts"):
             existing_ips = {h.get("ip") for h in res["managed_hosts"]}
             self.config["managed_hosts"] = (
                 list(res["managed_hosts"])
                 + [h for h in self.config.get("managed_hosts", []) if h.get("ip") not in existing_ips]
-            )[:6]
+            )[:8]
         await asyncio.to_thread(save_config, self.config)
         self.query_one(SmartHomePane).reload_devices(self.config.get("google_home_devices", []))
         self.query_one(SystemMonitorPane).refresh_metrics()

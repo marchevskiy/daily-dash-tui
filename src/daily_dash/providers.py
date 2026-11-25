@@ -1,4 +1,4 @@
-"""Data providers for system metrics (htop), weather, git/GitHub, and smart home."""
+"""Data providers for system metrics (htop), weather, NOAA SF tides, git/GitHub, and smart home."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ class SystemMetrics:
     top_processes: list[ProcessEntry] = field(default_factory=list)
 
 
-def collect_system_metrics(primary_host_label: str | None = None) -> SystemMetrics:
+def collect_system_metrics(primary_host_label: str | None = None, max_procs: int = 25) -> SystemMetrics:
     """Collect real-time local machine & process metrics (simplified htop)."""
     hostname = primary_host_label or socket.gethostname()
     sys_name = platform.system()
@@ -75,7 +75,7 @@ def collect_system_metrics(primary_host_label: str | None = None) -> SystemMetri
     disk = psutil.disk_usage("/")
 
     batt = psutil.sensors_battery() if hasattr(psutil, "sensors_battery") else None
-    battery_pct = round(batt.percent, 1) if batt else 88.0
+    battery_pct = round(batt.percent, 1) if batt else 92.0
     power_plugged = bool(batt.power_plugged) if batt else True
 
     net = psutil.net_io_counters()
@@ -89,10 +89,10 @@ def collect_system_metrics(primary_host_label: str | None = None) -> SystemMetri
             procs.append(
                 ProcessEntry(
                     pid=int(info["pid"]),
-                    name=(info.get("name") or "unknown")[:20],
+                    name=(info.get("name") or "unknown")[:32],
                     cpu_pct=float(info.get("cpu_percent") or 0.0),
                     mem_pct=float(info.get("memory_percent") or 0.0),
-                    status=str(info.get("status") or "run")[:4],
+                    status=str(info.get("status") or "run")[:6],
                 )
             )
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
@@ -105,7 +105,7 @@ def collect_system_metrics(primary_host_label: str | None = None) -> SystemMetri
         os_summary=os_summary,
         uptime_str=uptime_str,
         cpu_total_pct=round(cpu_total, 1),
-        cpu_cores_pct=[round(c, 1) for c in cpu_cores[:16]],
+        cpu_cores_pct=[round(c, 1) for c in cpu_cores[:24]],
         load_avg=(round(load_avg[0], 2), round(load_avg[1], 2), round(load_avg[2], 2)),
         mem_used_gb=round((vm.total - vm.available) / (1024**3), 1),
         mem_total_gb=round(vm.total / (1024**3), 1),
@@ -118,7 +118,7 @@ def collect_system_metrics(primary_host_label: str | None = None) -> SystemMetri
         power_plugged=power_plugged,
         net_sent_mb=net_sent_mb,
         net_recv_mb=net_recv_mb,
-        top_processes=procs[:8],
+        top_processes=procs[:max_procs],
     )
 
 
@@ -154,6 +154,23 @@ class ForecastDay:
 
 
 @dataclass
+class TideEvent:
+    time: str
+    type: str  # "HIGH" or "LOW"
+    height_ft: float
+
+
+@dataclass
+class TideReport:
+    station_id: str
+    station_name: str
+    state_summary: str
+    events: list[TideEvent] = field(default_factory=list)
+    hourly_heights: list[float] = field(default_factory=list)
+    is_live: bool = False
+
+
+@dataclass
 class WeatherReport:
     location: str
     temp: float
@@ -168,30 +185,125 @@ class WeatherReport:
     sunset: str
     unit_symbol: str
     forecast: list[ForecastDay] = field(default_factory=list)
+    tides: TideReport | None = None
     is_live: bool = False
 
 
-def get_fallback_weather(location: str = "San Francisco, CA", unit: str = "fahrenheit") -> WeatherReport:
-    """Return realistic fallback weather data when offline."""
+def get_fallback_tides(
+    station_id: str = "9414290",
+    station_name: str = "San Francisco (Golden Gate / Ocean Beach)",
+) -> TideReport:
+    """Return realistic San Francisco NOAA tide table (King Tide / late Nov profile)."""
+    return TideReport(
+        station_id=station_id,
+        station_name=station_name,
+        state_summary="Falling → Low Tide at 16:48 (-1.1 ft)",
+        is_live=False,
+        events=[
+            TideEvent(time="04:12", type="LOW", height_ft=2.1),
+            TideEvent(time="10:18", type="HIGH", height_ft=6.8),
+            TideEvent(time="16:48", type="LOW", height_ft=-1.1),
+            TideEvent(time="23:24", type="HIGH", height_ft=5.2),
+        ],
+        hourly_heights=[3.5, 2.6, 2.1, 2.9, 4.4, 5.9, 6.8, 6.1, 4.2, 1.8, -0.3, -1.1, 0.4, 2.7, 4.5, 5.2],
+    )
+
+
+async def fetch_tides_async(
+    station_id: str = "9414290",
+    station_name: str = "San Francisco (Golden Gate / Ocean Beach)",
+) -> TideReport:
+    """Fetch live High/Low tide predictions from NOAA CO-OPS API for San Francisco (9414290)."""
+    today_str = datetime.date.today().strftime("%Y%m%d")
+    url = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
+    params = {
+        "begin_date": today_str,
+        "range": "30",
+        "station": station_id,
+        "product": "predictions",
+        "datum": "MLLW",
+        "time_zone": "lst_ldt",
+        "interval": "hilo",
+        "units": "english",
+        "application": "daily_dash_tui",
+        "format": "json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=3.5) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+
+        preds = data.get("predictions", [])
+        if not preds:
+            return get_fallback_tides(station_id, station_name)
+
+        events: list[TideEvent] = []
+        heights: list[float] = []
+        now_hm = datetime.datetime.now().strftime("%H:%M")
+        next_event: TideEvent | None = None
+
+        for p in preds[:6]:
+            t_raw = str(p.get("t", ""))  # "YYYY-MM-DD HH:MM"
+            hm = t_raw.split(" ")[-1] if " " in t_raw else t_raw
+            t_type = "HIGH" if str(p.get("type", "H")).upper().startswith("H") else "LOW"
+            val = round(float(p.get("v", 0.0)), 1)
+            ev = TideEvent(time=hm, type=t_type, height_ft=val)
+            events.append(ev)
+            heights.append(val)
+            if next_event is None and hm >= now_hm:
+                next_event = ev
+
+        if next_event is None and events:
+            next_event = events[0]
+
+        direction = "Rising → High" if (next_event and next_event.type == "HIGH") else "Falling → Low"
+        summary = (
+            f"{direction} at {next_event.time} ({next_event.height_ft:+.1f} ft)"
+            if next_event
+            else "Tide cycle nominal"
+        )
+
+        return TideReport(
+            station_id=station_id,
+            station_name=station_name,
+            state_summary=summary,
+            events=events,
+            hourly_heights=heights or [2.1, 6.8, -1.1, 5.2],
+            is_live=True,
+        )
+    except Exception:
+        return get_fallback_tides(station_id, station_name)
+
+
+def get_fallback_weather(
+    location: str = "San Francisco, CA",
+    unit: str = "fahrenheit",
+    tide_station_id: str = "9414290",
+    tide_station_name: str = "San Francisco (Golden Gate / Ocean Beach)",
+) -> WeatherReport:
+    """Return realistic fallback weather & tide data when offline."""
     sym = "°F" if unit == "fahrenheit" else "°C"
     return WeatherReport(
         location=location,
-        temp=64.0 if sym == "°F" else 17.8,
-        feels_like=62.5 if sym == "°F" else 16.9,
-        humidity=68,
+        temp=61.0 if sym == "°F" else 16.1,
+        feels_like=59.5 if sym == "°F" else 15.3,
+        humidity=72,
         wind_mph=11.4,
         condition="Partly Cloudy",
         icon="⛅",
-        uv_index=4.2,
+        uv_index=3.8,
         aqi=24,
         sunrise="06:58",
         sunset="16:54",
         unit_symbol=sym,
         is_live=False,
+        tides=get_fallback_tides(tide_station_id, tide_station_name),
         forecast=[
-            ForecastDay("Thu", "🌤️", "Mostly Sunny", 66.0 if sym == "°F" else 19.0, 52.0 if sym == "°F" else 11.0, 10),
-            ForecastDay("Fri", "⛅", "Partly Cloudy", 63.0 if sym == "°F" else 17.0, 50.0 if sym == "°F" else 10.0, 20),
-            ForecastDay("Sat", "🌦️", "Coastal Showers", 59.0 if sym == "°F" else 15.0, 48.0 if sym == "°F" else 9.0, 65),
+            ForecastDay("Thu", "🌤️", "Mostly Sunny", 64.0 if sym == "°F" else 18.0, 50.0 if sym == "°F" else 10.0, 10),
+            ForecastDay("Fri", "⛅", "Partly Cloudy", 62.0 if sym == "°F" else 17.0, 49.0 if sym == "°F" else 9.5, 20),
+            ForecastDay("Sat", "🌦️", "Coastal Showers", 58.0 if sym == "°F" else 14.5, 48.0 if sym == "°F" else 9.0, 65),
+            ForecastDay("Sun", "🌤️", "Crisp & Clear", 61.0 if sym == "°F" else 16.0, 47.0 if sym == "°F" else 8.5, 10),
         ],
     )
 
@@ -201,8 +313,11 @@ async def fetch_weather_async(
     latitude: float,
     longitude: float,
     unit: str = "fahrenheit",
+    tide_station_id: str = "9414290",
+    tide_station_name: str = "San Francisco (Golden Gate / Ocean Beach)",
 ) -> WeatherReport:
-    """Fetch live weather from Open-Meteo API with graceful fallback."""
+    """Fetch live weather from Open-Meteo API + live NOAA tides with graceful fallback."""
+    tides = await fetch_tides_async(tide_station_id, tide_station_name)
     sym = "°F" if unit == "fahrenheit" else "°C"
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -213,7 +328,7 @@ async def fetch_weather_async(
         "temperature_unit": unit,
         "wind_speed_unit": "mph",
         "timezone": "auto",
-        "forecast_days": 4,
+        "forecast_days": 6,
     }
     try:
         async with httpx.AsyncClient(timeout=3.5) as client:
@@ -226,10 +341,10 @@ async def fetch_weather_async(
         code = int(curr.get("weather_code", 2))
         cond, icon = WMO_WEATHER_CODES.get(code, ("Partly Cloudy", "⛅"))
 
-        sunrises = daily.get("sunrise", ["T06:55"])
-        sunsets = daily.get("sunset", ["T17:05"])
-        sunrise_str = sunrises[0].split("T")[-1] if sunrises else "06:55"
-        sunset_str = sunsets[0].split("T")[-1] if sunsets else "17:05"
+        sunrises = daily.get("sunrise", ["T06:58"])
+        sunsets = daily.get("sunset", ["T16:54"])
+        sunrise_str = sunrises[0].split("T")[-1] if sunrises else "06:58"
+        sunset_str = sunsets[0].split("T")[-1] if sunsets else "16:54"
 
         forecast: list[ForecastDay] = []
         dates = daily.get("time", [])
@@ -238,7 +353,7 @@ async def fetch_weather_async(
         lows = daily.get("temperature_2m_min", [])
         probs = daily.get("precipitation_probability_max", [])
 
-        for idx in range(1, min(4, len(dates))):
+        for idx in range(1, min(6, len(dates))):
             dt = datetime.date.fromisoformat(dates[idx])
             day_name = dt.strftime("%a")
             d_code = int(codes[idx]) if idx < len(codes) else 2
@@ -256,10 +371,10 @@ async def fetch_weather_async(
 
         return WeatherReport(
             location=location,
-            temp=round(float(curr.get("temperature_2m", 64.0)), 1),
-            feels_like=round(float(curr.get("apparent_temperature", 62.5)), 1),
-            humidity=int(curr.get("relative_humidity_2m", 65)),
-            wind_mph=round(float(curr.get("wind_speed_10m", 9.5)), 1),
+            temp=round(float(curr.get("temperature_2m", 61.0)), 1),
+            feels_like=round(float(curr.get("apparent_temperature", 59.5)), 1),
+            humidity=int(curr.get("relative_humidity_2m", 70)),
+            wind_mph=round(float(curr.get("wind_speed_10m", 10.5)), 1),
             condition=cond,
             icon=icon,
             uv_index=round(float(curr.get("uv_index", 3.5)), 1),
@@ -268,10 +383,13 @@ async def fetch_weather_async(
             sunset=sunset_str,
             unit_symbol=sym,
             forecast=forecast,
+            tides=tides,
             is_live=True,
         )
     except Exception:
-        return get_fallback_weather(location, unit)
+        fb = get_fallback_weather(location, unit, tide_station_id, tide_station_name)
+        fb.tides = tides
+        return fb
 
 
 def get_world_clock_strings(clocks_cfg: list[dict[str, str]]) -> list[tuple[str, str]]:
@@ -295,7 +413,7 @@ def get_git_dev_pulse(cwd: str | None = None) -> dict[str, Any]:
     work_dir = cwd or os.getcwd()
     branch = "main"
     dirty_count = 0
-    last_commit = "Initial dashboard setup"
+    last_commit = "feat: add LAN discovery & Google sync"
     repo_name = os.path.basename(os.path.abspath(work_dir))
 
     if shutil.which("git"):

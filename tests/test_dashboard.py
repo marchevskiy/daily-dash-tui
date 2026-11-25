@@ -13,6 +13,7 @@ from daily_dash.discovery import get_local_ip_and_subnet, parse_arp_neighbors, s
 from daily_dash.google_sync import _format_event_window
 from daily_dash.providers import (
     collect_system_metrics,
+    get_fallback_tides,
     get_fallback_weather,
     get_git_dev_pulse,
     get_world_clock_strings,
@@ -34,6 +35,8 @@ def test_config_roundtrip(tmp_path: Path) -> None:
 
     loaded = load_config(sample_file)
     assert loaded["profile"]["primary_host"] == "Alex-MacBook-Pro.local"
+    assert loaded["profile"]["tide_station_id"] == "9414290"
+    assert len(loaded["automations"]) == 4
     assert len(loaded["google_home_devices"]) >= 4
     assert len(loaded["tasks"]) >= 3
 
@@ -61,15 +64,21 @@ def test_google_sync_time_formatter() -> None:
     assert s_dt is not None and e_dt is not None
 
 
-def test_providers_metrics_and_clocks() -> None:
+def test_providers_metrics_tides_and_clocks() -> None:
     metrics = collect_system_metrics("Alex-MacBook-Pro.local")
     assert metrics.hostname == "Alex-MacBook-Pro.local"
     assert 0.0 <= metrics.cpu_total_pct <= 100.0
     assert metrics.mem_total_gb > 0
 
+    tides = get_fallback_tides()
+    assert tides.station_id == "9414290"
+    assert len(tides.events) == 4
+
     weather = get_fallback_weather("San Francisco, CA", "fahrenheit")
     assert weather.unit_symbol == "°F"
-    assert len(weather.forecast) == 3
+    assert len(weather.forecast) >= 3
+    assert weather.tides is not None
+    assert weather.tides.station_id == "9414290"
 
     clocks = get_world_clock_strings([{"label": "UTC", "tz": "UTC"}])
     assert len(clocks) == 1
@@ -88,10 +97,10 @@ def test_cli_init_config(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_tui_panes_and_interactions() -> None:
+async def test_tui_panes_and_dynamic_zoom() -> None:
     cfg = load_config()
     app = DailyDashApp(config=cfg, offline=True)
-    async with app.run_test(size=(140, 42)) as pilot:
+    async with app.run_test(size=(150, 44)) as pilot:
         sys_pane = app.query_one("#pane-system", SystemMonitorPane)
         home_pane = app.query_one("#pane-home", SmartHomePane)
         weather_pane = app.query_one("#pane-weather", WeatherPane)
@@ -100,7 +109,8 @@ async def test_tui_panes_and_interactions() -> None:
         extras_pane = app.query_one("#pane-extras", CommunityExtrasPane)
 
         assert sys_pane is not None
-        assert weather_pane is not None
+        assert weather_pane.report.tides is not None
+        assert len(extras_pane.automations) == 4
         assert cal_pane is not None
 
         # Focus pane 2 (Smart Home) and toggle a device
@@ -117,17 +127,25 @@ async def test_tui_panes_and_interactions() -> None:
         await pilot.press("space")
         assert tasks_pane.tasks[0]["done"] is not initial_done
 
-        # Focus pane 6 (Extras) and start Pomodoro timer
+        # Focus pane 6 (Extras / Automations) and start Pomodoro timer
         await pilot.press("6")
         assert app.focused == extras_pane
         assert extras_pane.pomo_running is False
         await pilot.press("p")
         assert extras_pane.pomo_running is True
 
-        # Test zooming & unzooming pane
+        # Test zooming & unzooming pane — verify grid switches to 1x1 zoomed class and pane expands
         await pilot.press("z")
+        await pilot.pause(0.1)
+        grid = app.query_one("#dashboard-grid")
+        assert grid.has_class("zoomed")
         assert extras_pane.has_class("maximized")
         assert sys_pane.has_class("hidden-pane")
+        assert extras_pane.size.width > 120
+        assert extras_pane.size.height > 35
+
         await pilot.press("z")
+        await pilot.pause(0.1)
+        assert not grid.has_class("zoomed")
         assert not extras_pane.has_class("maximized")
         assert not sys_pane.has_class("hidden-pane")
